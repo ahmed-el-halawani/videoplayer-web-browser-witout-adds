@@ -712,7 +712,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _init();
+    // iOS uses a native AVPlayerViewController (FlutterAVPlayerView) which has the
+    // AirPlay button built into its controls — no Chewie needed there.
+    if (!Platform.isIOS) _init();
   }
 
   Future<void> _init() async {
@@ -747,22 +749,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(
-          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          // iOS: native AirPlay button — routes the AVPlayer video to AppleTV/AirPlay TVs
-          // (e.g. LG AirPlay 2). iOS handles discovery, so no entitlement/multicast issues.
-          actions: [if (Platform.isIOS) const AirPlayIconButton(color: Colors.white)],
-        ),
-        body: Center(
-          child: _error != null
-              ? Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text("Can't play this video.\n$_error",
-                      textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
-              : _chewie == null
-                  ? const CircularProgressIndicator()
-                  : Chewie(controller: _chewie!),
-        ),
+        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        // iOS: native AVPlayerViewController — its built-in controls include the AirPlay
+        // icon, so the user taps it to cast to the LG TV (iOS owns discovery/pairing).
+        // Android: Chewie player; cast via the bottom-sheet "Cast to TV" (dart_cast).
+        body: Platform.isIOS
+            ? FlutterAVPlayerView(urlString: widget.url)
+            : Center(
+                child: _error != null
+                    ? Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text("Can't play this video.\n$_error",
+                            textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
+                    : _chewie == null
+                        ? const CircularProgressIndicator()
+                        : Chewie(controller: _chewie!),
+              ),
       );
 }
 
