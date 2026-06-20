@@ -642,17 +642,45 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 }
 
-class _UrlBar extends StatelessWidget {
+class _UrlBar extends StatefulWidget {
   final TextEditingController controller;
   final VoidCallback onSubmit;
   final VoidCallback onReload;
   const _UrlBar({required this.controller, required this.onSubmit, required this.onReload});
 
   @override
+  State<_UrlBar> createState() => _UrlBarState();
+}
+
+class _UrlBarState extends State<_UrlBar> {
+  final _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(() {
+      // Select all on focus so typing replaces the current URL.
+      if (_focus.hasFocus) {
+        widget.controller.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: widget.controller.text.length,
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => TextField(
-        controller: controller,
+        controller: widget.controller,
+        focusNode: _focus,
         textInputAction: TextInputAction.go,
-        onSubmitted: (_) => onSubmit(),
+        onSubmitted: (_) => widget.onSubmit(),
         keyboardType: TextInputType.url,
         autocorrect: false,
         decoration: InputDecoration(
@@ -661,7 +689,26 @@ class _UrlBar extends StatelessWidget {
           hintText: 'Search or enter address',
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-          suffixIcon: IconButton(icon: const Icon(Icons.refresh), onPressed: onReload),
+          suffixIcon: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Clear button — only when there's text to clear.
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: widget.controller,
+                builder: (_, value, child) => value.text.isEmpty
+                    ? const SizedBox.shrink()
+                    : IconButton(
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Clear',
+                        onPressed: () {
+                          widget.controller.clear();
+                          _focus.requestFocus();
+                        },
+                      ),
+              ),
+              IconButton(icon: const Icon(Icons.refresh), onPressed: widget.onReload),
+            ],
+          ),
         ),
       );
 }
