@@ -93,12 +93,13 @@ class History {
 
 class BrowserTab {
   final int id;
+  final int? windowId; // set when this tab adopts a blocked popup window
   InAppWebViewController? controller;
   String title = 'New Tab';
   String url;
   bool canBack = false;
   bool canForward = false;
-  BrowserTab(this.id, this.url);
+  BrowserTab(this.id, this.url, {this.windowId});
 }
 
 class BrowserScreen extends StatefulWidget {
@@ -156,20 +157,31 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _tab.controller?.loadUrl(urlRequest: URLRequest(url: WebUri(toLoadUrl(_urlBar.text))));
   }
 
-  void _popupBlocked(WebUri? url) {
+  void _popupBlocked(BrowserTab tab) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: const Text('Popup blocked'),
-      action: url == null
-          ? null
-          : SnackBarAction(label: 'Open', onPressed: () => _addTab(url.toString())),
+      action: SnackBarAction(
+        label: 'Open',
+        onPressed: () {
+          final i = _tabs.indexOf(tab);
+          if (i != -1) {
+            setState(() {
+              _active = i;
+              _urlBar.text = tab.url;
+            });
+          }
+        },
+      ),
     ));
   }
 
   Widget _buildWebView(BrowserTab tab) => InAppWebView(
         key: ValueKey(tab.id),
-        initialUrlRequest: URLRequest(url: WebUri(tab.url)),
+        windowId: tab.windowId,
+        // windowId tabs receive their URL from the adopted popup window, not here.
+        initialUrlRequest: tab.windowId == null ? URLRequest(url: WebUri(tab.url)) : null,
         initialSettings: _settings,
         onWebViewCreated: (c) => tab.controller = c,
         onTitleChanged: (c, t) => setState(() => tab.title = (t == null || t.isEmpty) ? tab.title : t),
@@ -185,10 +197,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
             setState(() => _urlBar.text = uri.toString());
           }
         },
-        // ponytail: every window.open / target=_blank is treated as a popup and blocked.
+        // ponytail: every window.open / target=_blank is parked in a hidden tab,
+        // never the current one. Returning true stops the WebView's default
+        // (which would load it inline). The snackbar's Open reveals the tab.
         onCreateWindow: (c, action) async {
-          _popupBlocked(action.request.url);
-          return false; // do not create the window
+          final popup = BrowserTab(
+            _nextId++,
+            action.request.url?.toString() ?? 'Popup',
+            windowId: action.windowId,
+          );
+          setState(() => _tabs.add(popup)); // added but not made active = hidden
+          _popupBlocked(popup);
+          return true; // we handle the window; do not load it inline
         },
       );
 
