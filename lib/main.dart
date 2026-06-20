@@ -18,7 +18,12 @@ void main() async {
   _selfCheck();
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  runApp(BrowserApp(blockers: await _loadBlockers()));
+  final prefs = await SharedPreferences.getInstance();
+  runApp(BrowserApp(
+    blockers: await _loadBlockers(),
+    initialTabs: prefs.getStringList('tabs') ?? const [],
+    initialActive: prefs.getInt('active') ?? 0,
+  ));
 }
 
 // ponytail: trimmed rule set; swap easylist.json for full converted EasyList
@@ -69,13 +74,16 @@ void _selfCheck() {
 
 class BrowserApp extends StatelessWidget {
   final List<ContentBlocker> blockers;
-  const BrowserApp({super.key, required this.blockers});
+  final List<String> initialTabs;
+  final int initialActive;
+  const BrowserApp(
+      {super.key, required this.blockers, this.initialTabs = const [], this.initialActive = 0});
   @override
   Widget build(BuildContext context) => MaterialApp(
         title: 'Browser',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
-        home: BrowserScreen(blockers: blockers),
+        home: BrowserScreen(blockers: blockers, initialTabs: initialTabs, initialActive: initialActive),
       );
 }
 
@@ -129,7 +137,10 @@ class BrowserTab {
 
 class BrowserScreen extends StatefulWidget {
   final List<ContentBlocker> blockers;
-  const BrowserScreen({super.key, required this.blockers});
+  final List<String> initialTabs;
+  final int initialActive;
+  const BrowserScreen(
+      {super.key, required this.blockers, this.initialTabs = const [], this.initialActive = 0});
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
@@ -156,8 +167,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
   @override
   void initState() {
     super.initState();
-    _tabs.add(BrowserTab(_nextId++, 'https://www.google.com'));
-    _urlBar.text = _tabs[0].url;
+    // Restore last session's tabs (and active tab); fall back to a single tab.
+    final urls = widget.initialTabs.isEmpty ? ['https://www.google.com'] : widget.initialTabs;
+    for (final u in urls) {
+      _tabs.add(BrowserTab(_nextId++, u));
+    }
+    _active = widget.initialActive.clamp(0, _tabs.length - 1);
+    _urlBar.text = _tab.url;
     SharedPreferences.getInstance().then((p) {
       if (!mounted) return;
       setState(() {
@@ -246,12 +262,21 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
+  // Persist open tab URLs + active index so the app reopens the last session.
+  void _persistTabs() {
+    SharedPreferences.getInstance().then((p) {
+      p.setStringList('tabs', _tabs.map((t) => t.url).toList());
+      p.setInt('active', _active);
+    });
+  }
+
   void _addTab([String? url]) {
     setState(() {
       _tabs.add(BrowserTab(_nextId++, url ?? 'https://www.google.com'));
       _active = _tabs.length - 1;
       _urlBar.text = _tabs[_active].url;
     });
+    _persistTabs();
   }
 
   void _closeTab(int i) {
@@ -264,6 +289,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (_active >= _tabs.length) _active = _tabs.length - 1;
       _urlBar.text = _tab.url;
     });
+    _persistTabs();
   }
 
   void _go() {
@@ -508,6 +534,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           tab.canForward = await c.canGoForward();
           if (uri != null) History.add(uri.toString(), tab.title);
           if (identical(tab, _tab) && mounted) setState(() => _urlBar.text = tab.url);
+          _persistTabs(); // remember the latest URL per tab
         },
         onUpdateVisitedHistory: (c, uri, isReload) {
           // Clear on any URL change too (covers SPA pushState navigations).
@@ -624,10 +651,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   final t = _tabs[i];
                   final selected = i == _active;
                   return InkWell(
-                    onTap: () => setState(() {
-                      _active = i;
-                      _urlBar.text = t.url;
-                    }),
+                    onTap: () {
+                      setState(() {
+                        _active = i;
+                        _urlBar.text = t.url;
+                      });
+                      _persistTabs();
+                    },
                     child: Container(
                       width: 150,
                       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -1093,16 +1123,18 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
   }
 
   @override
-  Widget build(BuildContext context) => MaterialVideoControlsTheme(
-        // Disable the default vertical volume/brightness drags so our up/down
-        // swipe (maximize/minimize) wins the gesture.
-        // Keep double-tap-to-seek (left = back, right = forward); drop volume/brightness
-        // vertical drags so our up/down swipe (maximize/minimize) wins.
-        normal: const MaterialVideoControlsThemeData(
-            volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
-        fullscreen: const MaterialVideoControlsThemeData(
-            volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
-        child: Video(controller: _controller),
+  Widget build(BuildContext context) => Padding(
+        // Lift controls off the very bottom edge (clears home-indicator/nav bar).
+        padding: EdgeInsets.only(bottom: MediaQuery.viewPaddingOf(context).bottom + 24),
+        child: MaterialVideoControlsTheme(
+          // Keep double-tap-to-seek (left = back, right = forward); drop volume/brightness
+          // vertical drags so our up/down swipe (maximize/minimize) wins.
+          normal: const MaterialVideoControlsThemeData(
+              volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
+          fullscreen: const MaterialVideoControlsThemeData(
+              volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
+          child: Video(controller: _controller),
+        ),
       );
 }
 
@@ -1125,6 +1157,15 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
   }
 
   void _wake() => WakelockPlus.toggle(enable: _video?.value.isPlaying ?? false);
+
+  void _seek(int seconds) {
+    final v = _video;
+    if (v == null) return;
+    var t = v.value.position + Duration(seconds: seconds);
+    if (t < Duration.zero) t = Duration.zero;
+    if (t > v.value.duration) t = v.value.duration;
+    v.seekTo(t);
+  }
 
   Future<void> _init() async {
     try {
@@ -1170,7 +1211,34 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
                       textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
               : _chewie == null
                   ? const CircularProgressIndicator()
-                  : Chewie(controller: _chewie!),
+                  : Stack(children: [
+                      Chewie(controller: _chewie!),
+                      // Double-tap left = back 10s, right = forward 10s. Translucent so
+                      // single taps still reach Chewie's controls; bottom area left free
+                      // for the control bar.
+                      Positioned.fill(
+                        child: Column(children: [
+                          Expanded(
+                            flex: 4,
+                            child: Row(children: [
+                              Expanded(
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  onDoubleTap: () => _seek(-10),
+                                ),
+                              ),
+                              Expanded(
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  onDoubleTap: () => _seek(10),
+                                ),
+                              ),
+                            ]),
+                          ),
+                          const Expanded(flex: 1, child: SizedBox()), // keep control bar tappable
+                        ]),
+                      ),
+                    ]),
         ),
       );
 }
