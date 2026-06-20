@@ -4,9 +4,30 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
   _selfCheck();
-  runApp(const BrowserApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(BrowserApp(blockers: await _loadBlockers()));
+}
+
+// ponytail: trimmed rule set; swap easylist.json for full converted EasyList
+// (under iOS WKContentRuleList's 50k-rule cap) if blocking falls short.
+// Any failure -> empty list so the browser still opens (never a stuck spinner).
+Future<List<ContentBlocker>> _loadBlockers() async {
+  try {
+    final raw = await rootBundle.loadString('assets/easylist.json');
+    final list = jsonDecode(raw) as List;
+    return list.map((e) {
+      final m = Map<String, dynamic>.from(e);
+      return ContentBlocker(
+        trigger: ContentBlockerTrigger.fromMap(Map<String, dynamic>.from(m['trigger'])),
+        action: ContentBlockerAction.fromMap(Map<String, dynamic>.from(m['action'])),
+      );
+    }).toList();
+  } catch (e) {
+    debugPrint('ad-list load failed, continuing without blockers: $e');
+    return [];
+  }
 }
 
 // ponytail: only non-trivial logic in the app — the URL-vs-search guess.
@@ -36,13 +57,14 @@ void _selfCheck() {
 }
 
 class BrowserApp extends StatelessWidget {
-  const BrowserApp({super.key});
+  final List<ContentBlocker> blockers;
+  const BrowserApp({super.key, required this.blockers});
   @override
   Widget build(BuildContext context) => MaterialApp(
         title: 'Browser',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
-        home: const BrowserScreen(),
+        home: BrowserScreen(blockers: blockers),
       );
 }
 
@@ -80,7 +102,8 @@ class BrowserTab {
 }
 
 class BrowserScreen extends StatefulWidget {
-  const BrowserScreen({super.key});
+  final List<ContentBlocker> blockers;
+  const BrowserScreen({super.key, required this.blockers});
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
@@ -90,8 +113,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
   final _urlBar = TextEditingController();
   int _active = 0;
   int _nextId = 0;
-  List<ContentBlocker> _blockers = [];
-  bool _ready = false;
 
   BrowserTab get _tab => _tabs[_active];
 
@@ -100,28 +121,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
     super.initState();
     _tabs.add(BrowserTab(_nextId++, 'https://www.google.com'));
     _urlBar.text = _tabs[0].url;
-    _loadBlockers();
-  }
-
-  Future<void> _loadBlockers() async {
-    final raw = await rootBundle.loadString('assets/easylist.json');
-    final list = jsonDecode(raw) as List;
-    // ponytail: trimmed rule set; swap easylist.json for full converted EasyList
-    // (stay under iOS WKContentRuleList's 50k-rule cap) if blocking falls short.
-    setState(() {
-      _blockers = list.map((e) {
-        final m = Map<String, dynamic>.from(e);
-        return ContentBlocker(
-          trigger: ContentBlockerTrigger.fromMap(Map<String, dynamic>.from(m['trigger'])),
-          action: ContentBlockerAction.fromMap(Map<String, dynamic>.from(m['action'])),
-        );
-      }).toList();
-      _ready = true;
-    });
   }
 
   InAppWebViewSettings get _settings => InAppWebViewSettings(
-        contentBlockers: _blockers,
+        contentBlockers: widget.blockers,
         supportMultipleWindows: true,
         javaScriptCanOpenWindowsAutomatically: false,
         allowsInlineMediaPlayback: true,
@@ -191,9 +194,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_ready) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
