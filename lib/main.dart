@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -135,11 +136,26 @@ class _BrowserScreenState extends State<BrowserScreen> {
         mediaPlaybackRequiresUserGesture: false,
         iframeAllowFullscreen: true,
         // ponytail: spoof a normal browser UA so anti-WebView scripts stop redirecting.
-        // Ceiling: covers the 95% UA-sniffing case; not navigator.webdriver / TLS fingerprint.
+        // Ceiling: covers the 95% UA-sniffing case; not TLS fingerprinting.
         userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
             '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
         thirdPartyCookiesEnabled: true,
+        javaScriptEnabled: true,
+        domStorageEnabled: true,
+        databaseEnabled: true,
       );
+
+  // ponytail: minimal "stealth" — a Chrome UA with no window.chrome / webdriver=undefined
+  // is a dead giveaway; patch the two checks most anti-WebView scripts use.
+  UnmodifiableListView<UserScript> get _stealth => UnmodifiableListView([
+        UserScript(
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          source: '''
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            if (!window.chrome) { window.chrome = { runtime: {} }; }
+          ''',
+        ),
+      ]);
 
   Future<void> _toggleAdBlock() async {
     setState(() => _adBlock = !_adBlock);
@@ -194,6 +210,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         key: ValueKey(tab.id),
         initialUrlRequest: URLRequest(url: WebUri(tab.url)),
         initialSettings: _settings,
+        initialUserScripts: _stealth,
         onWebViewCreated: (c) => tab.controller = c,
         onTitleChanged: (c, t) => setState(() => tab.title = (t == null || t.isEmpty) ? tab.title : t),
         onLoadStop: (c, uri) async {
