@@ -5,6 +5,7 @@ import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
@@ -260,6 +261,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
     ));
   }
 
+  void _clearVideos(BrowserTab tab) {
+    if (tab.videos.isEmpty && tab.seen.isEmpty && tab.poster == null) return;
+    tab.videos.clear();
+    tab.seen.clear();
+    tab.poster = null;
+    if (mounted) setState(() {});
+  }
+
   void _addVideo(BrowserTab tab, String url, {String? poster, String? title}) {
     if (!_isVideoUrl(url) || tab.seen.contains(url)) return;
     tab.seen.add(url);
@@ -303,6 +312,47 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return '';
   }
 
+  void _showVideoActions(DetectedVideo v) {
+    showDialog(
+      context: context,
+      builder: (dctx) => SimpleDialog(
+        title: Text(v.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+        children: [
+          ListTile(
+            leading: const Icon(Icons.play_arrow),
+            title: const Text('Play in app'),
+            onTap: () {
+              Navigator.of(dctx).pop(); // dialog
+              Navigator.of(context).pop(); // bottom sheet
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title)),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.cast),
+            title: const Text('Cast to TV'),
+            onTap: () {
+              Navigator.of(dctx).pop();
+              // ponytail: cast UI present; dart_cast wiring is the deferred feature.
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Casting not set up yet')),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.share),
+            title: const Text('Share link'),
+            onTap: () {
+              Navigator.of(dctx).pop();
+              SharePlus.instance.share(ShareParams(text: v.url));
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openVideoSheet() async {
     await showModalBottomSheet(
       context: context,
@@ -330,12 +380,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               title: Text(v.title, maxLines: 1, overflow: TextOverflow.ellipsis),
               subtitle: Text(v.url, maxLines: 1, overflow: TextOverflow.ellipsis),
               trailing: v.quality.isEmpty ? null : Chip(label: Text(v.quality)),
-              onTap: () {
-                Navigator.of(context).pop();
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title)),
-                );
-              },
+              onTap: () => _showVideoActions(v),
             );
           },
         );
@@ -360,13 +405,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           );
         },
         onTitleChanged: (c, t) => setState(() => tab.title = (t == null || t.isEmpty) ? tab.title : t),
-        onLoadStart: (c, uri) {
-          // Clear detected videos when the page reloads or navigates away.
-          tab.videos.clear();
-          tab.seen.clear();
-          tab.poster = null;
-          if (mounted) setState(() {});
-        },
+        onLoadStart: (c, uri) => _clearVideos(tab),
         onLoadResource: (c, resource) {
           final u = resource.url?.toString();
           if (u != null) _addVideo(tab, u);
@@ -379,6 +418,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (identical(tab, _tab) && mounted) setState(() => _urlBar.text = tab.url);
         },
         onUpdateVisitedHistory: (c, uri, isReload) {
+          // Clear on any URL change too (covers SPA pushState navigations).
+          if (uri != null && uri.toString() != tab.url) {
+            _clearVideos(tab);
+            tab.url = uri.toString(); // keep in sync so the same URL doesn't re-clear
+          }
           if (identical(tab, _tab) && uri != null && mounted) {
             setState(() => _urlBar.text = uri.toString());
           }
