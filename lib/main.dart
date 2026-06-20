@@ -712,9 +712,7 @@ class LanScanResult {
   const LanScanResult(this.devices, this.responders);
 }
 
-Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) async {
-  final prefix = await _subnetPrefix();
-  if (prefix == null) return const LanScanResult([], 0);
+Future<LanScanResult> _probeDlna(List<String> hosts, {Duration wait = const Duration(seconds: 5)}) async {
   final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
   final locations = <String>{};
   socket.listen((event) {
@@ -731,7 +729,7 @@ Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) 
     'urn:schemas-upnp-org:service:AVTransport:1',
     'ssdp:all',
   ];
-  void send(String host) {
+  for (final host in hosts) {
     for (final st in targets) {
       final msg = 'M-SEARCH * HTTP/1.1\r\n'
           'HOST: $host:1900\r\n'
@@ -742,14 +740,6 @@ Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) 
       } catch (_) {}
     }
   }
-
-  for (var i = 1; i <= 254; i++) {
-    send('$prefix$i');
-  }
-  // Also hit the multicast group (works on Android; iOS may ignore it — harmless).
-  try {
-    send('239.255.255.250');
-  } catch (_) {}
   await Future.delayed(wait);
   socket.close();
 
@@ -764,6 +754,17 @@ Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) 
   return LanScanResult(devices, locations.length);
 }
 
+Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) async {
+  final prefix = await _subnetPrefix();
+  if (prefix == null) return const LanScanResult([], 0);
+  final hosts = [for (var i = 1; i <= 254; i++) '$prefix$i', '239.255.255.250'];
+  return _probeDlna(hosts, wait: wait);
+}
+
+// Targeted: M-SEARCH a single IP the user typed. Faster and bypasses subnet guessing.
+Future<LanScanResult> probeDlnaHost(String ip) =>
+    _probeDlna([ip], wait: const Duration(seconds: 3));
+
 /// Cast device picker — two tabs: LAN scan (works now on iOS) and the
 /// standard multicast discovery (works on a signed App Store build).
 class CastScreen extends StatefulWidget {
@@ -775,6 +776,7 @@ class CastScreen extends StatefulWidget {
 
 class _CastScreenState extends State<CastScreen> {
   Future<LanScanResult>? _scan;
+  final _ipCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -784,6 +786,7 @@ class _CastScreenState extends State<CastScreen> {
 
   @override
   void dispose() {
+    _ipCtrl.dispose();
     widget.service.stopDiscovery();
     super.dispose();
   }
@@ -832,6 +835,31 @@ class _CastScreenState extends State<CastScreen> {
                           'Your LG TV may have DLNA off or removed on newer webOS.\n'
                           'Try: TV Settings → enable Screen/Smart Share — or use AirPlay in the player.';
                   return Column(children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                      child: Row(children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _ipCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              border: OutlineInputBorder(),
+                              labelText: 'TV IP address',
+                              hintText: 'e.g. 192.168.1.20',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: () {
+                            final ip = _ipCtrl.text.trim();
+                            if (ip.isNotEmpty) setState(() => _scan = probeDlnaHost(ip));
+                          },
+                          child: const Text('Connect'),
+                        ),
+                      ]),
+                    ),
                     Expanded(
                       child: devices.isEmpty
                           ? Center(child: Padding(
