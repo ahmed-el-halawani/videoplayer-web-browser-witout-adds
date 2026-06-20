@@ -1,14 +1,17 @@
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'package:chewie/chewie.dart';
 import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_to_airplay/flutter_to_airplay.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
 
 void main() async {
   _selfCheck();
@@ -136,6 +139,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   int _active = 0;
   int _nextId = 0;
   bool _adBlock = true;
+  String _player = 'media_kit'; // 'native' | 'video_player' | 'media_kit'
   CastService? _cast;
   final ValueNotifier<int> _videosTick = ValueNotifier(0); // bumps so an open sheet refreshes
 
@@ -154,7 +158,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _tabs.add(BrowserTab(_nextId++, 'https://www.google.com'));
     _urlBar.text = _tabs[0].url;
     SharedPreferences.getInstance().then((p) {
-      if (p.getBool('adblock') == false && mounted) setState(() => _adBlock = false);
+      if (!mounted) return;
+      setState(() {
+        if (p.getBool('adblock') == false) _adBlock = false;
+        _player = p.getString('player') ?? 'media_kit';
+      });
     });
   }
 
@@ -407,7 +415,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               Navigator.of(dctx).pop(); // dialog
               Navigator.of(context).pop(); // bottom sheet
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title, referer: _tab.url)),
+                MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title, referer: _tab.url, kind: _player)),
               );
             },
           ),
@@ -577,9 +585,15 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 : Badge(label: Text('${_tab.videos.length}'), child: const Icon(Icons.movie)),
             onPressed: _openVideoSheet,
           ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: _openHistory,
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'history') _openHistory();
+              if (v == 'settings') _openSettings();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'history', child: Text('History')),
+              PopupMenuItem(value: 'settings', child: Text('Settings')),
+            ],
           ),
         ],
       ),
@@ -648,6 +662,16 @@ class _BrowserScreenState extends State<BrowserScreen> {
       MaterialPageRoute(builder: (_) => const HistoryScreen()),
     );
     if (url != null) _addTab(url);
+  }
+
+  Future<void> _openSettings() async {
+    final chosen = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => SettingsScreen(current: _player)),
+    );
+    if (chosen != null && mounted) {
+      setState(() => _player = chosen);
+      (await SharedPreferences.getInstance()).setString('player', chosen);
+    }
   }
 }
 
@@ -958,27 +982,57 @@ class _CastScreenState extends State<CastScreen> {
       );
 }
 
-class PlayerScreen extends StatefulWidget {
+/// Picks the player engine per the user's Settings choice.
+class PlayerScreen extends StatelessWidget {
   final String url;
   final String title;
   final String? referer;
-  const PlayerScreen({super.key, required this.url, required this.title, this.referer});
+  final String kind; // 'native' | 'video_player' | 'media_kit'
+  const PlayerScreen(
+      {super.key, required this.url, required this.title, this.referer, this.kind = 'media_kit'});
+
   @override
-  State<PlayerScreen> createState() => _PlayerScreenState();
+  Widget build(BuildContext context) {
+    Widget body;
+    switch (kind) {
+      case 'native':
+        // iOS: AVPlayerViewController (built-in AirPlay). Android has no separate
+        // native engine here, so fall back to video_player/Chewie (ExoPlayer).
+        body = Platform.isIOS
+            ? FlutterAVPlayerView(urlString: url)
+            : _ChewiePlayer(url: url);
+        break;
+      case 'video_player':
+        body = _ChewiePlayer(url: url);
+        break;
+      default: // media_kit
+        body = _MediaKitPlayer(url: url, referer: referer);
+    }
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+      body: body,
+    );
+  }
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
-  // media_kit (libmpv) — plays almost any format/codec the native players can't.
+class _MediaKitPlayer extends StatefulWidget {
+  final String url;
+  final String? referer;
+  const _MediaKitPlayer({required this.url, this.referer});
+  @override
+  State<_MediaKitPlayer> createState() => _MediaKitPlayerState();
+}
+
+class _MediaKitPlayerState extends State<_MediaKitPlayer> {
   late final Player _player = Player();
   late final VideoController _controller = VideoController(_player);
 
   @override
   void initState() {
     super.initState();
-    _player.open(Media(
-      widget.url,
-      httpHeaders: widget.referer == null ? null : {'Referer': widget.referer!},
-    ));
+    _player.open(Media(widget.url,
+        httpHeaders: widget.referer == null ? null : {'Referer': widget.referer!}));
   }
 
   @override
@@ -988,10 +1042,110 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   @override
+  Widget build(BuildContext context) => Video(controller: _controller);
+}
+
+class _ChewiePlayer extends StatefulWidget {
+  final String url;
+  const _ChewiePlayer({required this.url});
+  @override
+  State<_ChewiePlayer> createState() => _ChewiePlayerState();
+}
+
+class _ChewiePlayerState extends State<_ChewiePlayer> {
+  VideoPlayerController? _video;
+  ChewieController? _chewie;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      await v.initialize();
+      if (!mounted) {
+        v.dispose();
+        return;
+      }
+      setState(() {
+        _video = v;
+        _chewie = ChewieController(
+          videoPlayerController: v,
+          autoPlay: true,
+          allowFullScreen: true,
+          aspectRatio: v.value.aspectRatio,
+        );
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _chewie?.dispose();
+    _video?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: _error != null
+            ? Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text("Can't play this video.\n$_error",
+                    textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
+            : _chewie == null
+                ? const CircularProgressIndicator()
+                : Chewie(controller: _chewie!),
+      );
+}
+
+class SettingsScreen extends StatefulWidget {
+  final String current;
+  const SettingsScreen({super.key, required this.current});
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late String _sel = widget.current;
+
+  static const _options = {
+    'media_kit': ('media_kit (recommended)', 'Plays almost any format/codec. No AirPlay.'),
+    'video_player': ('video_player', 'Platform player (ExoPlayer/AVPlayer) with Chewie controls.'),
+    'native': ('Native', 'iOS: native player with AirPlay. Android: same as video_player.'),
+  };
+
+  @override
   Widget build(BuildContext context) => Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
-        body: Video(controller: _controller), // built-in seek/volume/fullscreen controls
+        appBar: AppBar(title: const Text('Settings')),
+        body: RadioGroup<String>(
+          groupValue: _sel,
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() => _sel = v);
+            Navigator.of(context).pop(v); // return choice; parent saves it
+          },
+          child: ListView(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+                child: Text('Video player', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+              for (final e in _options.entries)
+                RadioListTile<String>(
+                  value: e.key,
+                  title: Text(e.value.$1),
+                  subtitle: Text(e.value.$2),
+                ),
+            ],
+          ),
+        ),
       );
 }
 
