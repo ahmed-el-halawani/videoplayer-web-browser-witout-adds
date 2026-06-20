@@ -1,19 +1,19 @@
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'package:chewie/chewie.dart';
 import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:flutter_to_airplay/flutter_to_airplay.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
 
 void main() async {
   _selfCheck();
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   runApp(BrowserApp(blockers: await _loadBlockers()));
 }
 
@@ -407,7 +407,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
               Navigator.of(dctx).pop(); // dialog
               Navigator.of(context).pop(); // bottom sheet
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title)),
+                MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title, referer: _tab.url)),
               );
             },
           ),
@@ -961,50 +961,29 @@ class _CastScreenState extends State<CastScreen> {
 class PlayerScreen extends StatefulWidget {
   final String url;
   final String title;
-  const PlayerScreen({super.key, required this.url, required this.title});
+  final String? referer;
+  const PlayerScreen({super.key, required this.url, required this.title, this.referer});
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  VideoPlayerController? _video;
-  ChewieController? _chewie;
-  String? _error;
+  // media_kit (libmpv) — plays almost any format/codec the native players can't.
+  late final Player _player = Player();
+  late final VideoController _controller = VideoController(_player);
 
   @override
   void initState() {
     super.initState();
-    // iOS uses a native AVPlayerViewController (FlutterAVPlayerView) which has the
-    // AirPlay button built into its controls — no Chewie needed there.
-    if (!Platform.isIOS) _init();
-  }
-
-  Future<void> _init() async {
-    try {
-      final v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-      await v.initialize();
-      if (!mounted) {
-        v.dispose();
-        return;
-      }
-      setState(() {
-        _video = v;
-        _chewie = ChewieController(
-          videoPlayerController: v,
-          autoPlay: true,
-          allowFullScreen: true,
-          aspectRatio: v.value.aspectRatio,
-        );
-      });
-    } catch (e) {
-      if (mounted) setState(() => _error = '$e');
-    }
+    _player.open(Media(
+      widget.url,
+      httpHeaders: widget.referer == null ? null : {'Referer': widget.referer!},
+    ));
   }
 
   @override
   void dispose() {
-    _chewie?.dispose();
-    _video?.dispose();
+    _player.dispose();
     super.dispose();
   }
 
@@ -1012,21 +991,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
         appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
-        // iOS: native AVPlayerViewController — its built-in controls include the AirPlay
-        // icon, so the user taps it to cast to the LG TV (iOS owns discovery/pairing).
-        // Android: Chewie player; cast via the bottom-sheet "Cast to TV" (dart_cast).
-        body: Platform.isIOS
-            ? FlutterAVPlayerView(urlString: widget.url)
-            : Center(
-                child: _error != null
-                    ? Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Text("Can't play this video.\n$_error",
-                            textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
-                    : _chewie == null
-                        ? const CircularProgressIndicator()
-                        : Chewie(controller: _chewie!),
-              ),
+        body: Video(controller: _controller), // built-in seek/volume/fullscreen controls
       );
 }
 

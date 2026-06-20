@@ -36,11 +36,11 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_inappwebview: ^6.1.5
   shared_preferences: ^2.5.5
-  chewie: ^1.14.1
-  video_player: ^2.11.1
   share_plus: ^13.1.0
   dart_cast: ^0.6.0
-  flutter_to_airplay: ^2.1.0
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
 
 dev_dependencies:
   flutter_test:
