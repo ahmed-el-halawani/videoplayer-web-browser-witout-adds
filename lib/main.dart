@@ -1,6 +1,6 @@
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io' show Platform, HttpClient;
+import 'dart:io';
 import 'package:chewie/chewie.dart';
 import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
@@ -357,52 +357,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return CastMediaType.mp4;
   }
 
-  IconData _protocolIcon(CastProtocol p) => switch (p) {
-        CastProtocol.airplay => Icons.airplay,
-        CastProtocol.chromecast => Icons.cast,
-        CastProtocol.dlna => Icons.tv,
-      };
-
   Future<void> _castVideo(DetectedVideo v) async {
     final service = _castService();
-    await showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (sctx) => StreamBuilder<List<CastDevice>>(
-        stream: service.startDiscovery(timeout: const Duration(seconds: 15)),
-        builder: (ctx, snap) {
-          final devices = snap.data ?? const <CastDevice>[];
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                title: const Text('Cast to'),
-                trailing: snap.connectionState == ConnectionState.done
-                    ? null
-                    : const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-              ),
-              if (devices.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text('Searching for TVs on your Wi-Fi…\nMake sure the TV is on the same network.',
-                      textAlign: TextAlign.center),
-                ),
-              ...devices.map((d) => ListTile(
-                    leading: Icon(_protocolIcon(d.protocol)),
-                    title: Text(d.name),
-                    subtitle: Text(d.protocol.name),
-                    onTap: () {
-                      Navigator.of(sctx).pop();
-                      _connectAndPlay(service, d, v);
-                    },
-                  )),
-              const SizedBox(height: 12),
-            ],
-          );
-        },
-      ),
+    final device = await Navigator.of(context).push<CastDevice>(
+      MaterialPageRoute(builder: (_) => CastScreen(service: service)),
     );
-    service.stopDiscovery();
+    if (device != null && mounted) await _connectAndPlay(service, device, v);
   }
 
   Future<void> _connectAndPlay(CastService service, CastDevice device, DetectedVideo v) async {
@@ -702,6 +662,185 @@ class _UrlBar extends StatelessWidget {
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
           suffixIcon: IconButton(icon: const Icon(Icons.refresh), onPressed: onReload),
+        ),
+      );
+}
+
+IconData protocolIcon(CastProtocol p) => switch (p) {
+      CastProtocol.airplay => Icons.airplay,
+      CastProtocol.chromecast => Icons.cast,
+      CastProtocol.dlna => Icons.tv,
+    };
+
+// --- Manual LAN discovery (works on iOS without the multicast entitlement) ---
+// Multicast SSDP is blocked by the iOS sandbox; *unicast* UDP to each host is not.
+// We M-SEARCH every address in the /24, read LOCATION headers, fetch the device
+// description, and keep the DLNA media renderers.
+
+Future<String?> _subnetPrefix() async {
+  final ifaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4, includeLoopback: false);
+  for (final ni in ifaces) {
+    for (final a in ni.addresses) {
+      final ip = a.address;
+      if (ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.')) {
+        final p = ip.split('.');
+        return '${p[0]}.${p[1]}.${p[2]}.';
+      }
+    }
+  }
+  return null;
+}
+
+Future<DlnaDeviceDescription?> _fetchDescription(String loc) async {
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+  try {
+    final req = await client.getUrl(Uri.parse(loc));
+    final resp = await req.close().timeout(const Duration(seconds: 3));
+    final body = await resp.transform(const Utf8Decoder(allowMalformed: true)).join();
+    return DlnaDeviceDescription.parse(body, loc);
+  } catch (_) {
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
+Future<List<CastDevice>> scanLanDlna({Duration wait = const Duration(seconds: 4)}) async {
+  final prefix = await _subnetPrefix();
+  if (prefix == null) return [];
+  final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+  final locations = <String>{};
+  socket.listen((event) {
+    if (event != RawSocketEvent.read) return;
+    final dg = socket.receive();
+    if (dg == null) return;
+    final resp = String.fromCharCodes(dg.data);
+    final loc = RegExp(r'LOCATION:\s*(\S+)', caseSensitive: false).firstMatch(resp)?.group(1);
+    if (loc != null) locations.add(loc.trim());
+  });
+  for (var i = 1; i <= 254; i++) {
+    final host = '$prefix$i';
+    final msg = 'M-SEARCH * HTTP/1.1\r\n'
+        'HOST: $host:1900\r\n'
+        'MAN: "ssdp:discover"\r\n'
+        'ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n';
+    try {
+      socket.send(msg.codeUnits, InternetAddress(host), 1900);
+    } catch (_) {}
+  }
+  await Future.delayed(wait);
+  socket.close();
+
+  final devices = <CastDevice>[];
+  final seen = <String>{};
+  for (final loc in locations) {
+    final desc = await _fetchDescription(loc);
+    if (desc != null && (desc.avTransportControlUrl?.isNotEmpty ?? false) && seen.add(desc.udn)) {
+      devices.add(desc.toCastDevice());
+    }
+  }
+  return devices;
+}
+
+/// Cast device picker — two tabs: LAN scan (works now on iOS) and the
+/// standard multicast discovery (works on a signed App Store build).
+class CastScreen extends StatefulWidget {
+  final CastService service;
+  const CastScreen({super.key, required this.service});
+  @override
+  State<CastScreen> createState() => _CastScreenState();
+}
+
+class _CastScreenState extends State<CastScreen> {
+  Future<List<CastDevice>>? _scan;
+
+  @override
+  void initState() {
+    super.initState();
+    _scan = scanLanDlna();
+  }
+
+  @override
+  void dispose() {
+    widget.service.stopDiscovery();
+    super.dispose();
+  }
+
+  Widget _deviceTile(CastDevice d) => ListTile(
+        leading: Icon(protocolIcon(d.protocol)),
+        title: Text(d.name),
+        subtitle: Text('${d.protocol.name} · ${d.address.address}'),
+        onTap: () => Navigator.of(context).pop(d),
+      );
+
+  @override
+  Widget build(BuildContext context) => DefaultTabController(
+        length: 2,
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Cast to TV'),
+            bottom: const TabBar(tabs: [
+              Tab(text: 'Find on network'),
+              Tab(text: 'Standard'),
+            ]),
+          ),
+          body: TabBarView(
+            children: [
+              // Tab 1: LAN unicast scan (works on the current unsigned iOS build).
+              FutureBuilder<List<CastDevice>>(
+                future: _scan,
+                builder: (_, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const Center(child: Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('Scanning your Wi-Fi for TVs…', textAlign: TextAlign.center),
+                        ])));
+                  }
+                  final devices = snap.data ?? const <CastDevice>[];
+                  return Column(children: [
+                    Expanded(
+                      child: devices.isEmpty
+                          ? const Center(child: Padding(
+                              padding: EdgeInsets.all(24),
+                              child: Text('No TVs found.\nMake sure the TV is on and on the same Wi-Fi.',
+                                  textAlign: TextAlign.center)))
+                          : ListView(children: devices.map(_deviceTile).toList()),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Rescan'),
+                        onPressed: () => setState(() => _scan = scanLanDlna()),
+                      ),
+                    ),
+                  ]);
+                },
+              ),
+              // Tab 2: standard multicast discovery (needs a signed/store build on iOS).
+              StreamBuilder<List<CastDevice>>(
+                stream: widget.service.startDiscovery(timeout: const Duration(seconds: 15)),
+                builder: (_, snap) {
+                  final devices = snap.data ?? const <CastDevice>[];
+                  if (devices.isEmpty) {
+                    return Center(child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        snap.connectionState == ConnectionState.done
+                            ? 'No devices found.\nOn iPhone this works only in the App Store build.'
+                            : 'Searching…',
+                        textAlign: TextAlign.center),
+                    ));
+                  }
+                  return ListView(children: devices.map(_deviceTile).toList());
+                },
+              ),
+            ],
+          ),
         ),
       );
 }
