@@ -706,9 +706,15 @@ Future<DlnaDeviceDescription?> _fetchDescription(String loc) async {
   }
 }
 
-Future<List<CastDevice>> scanLanDlna({Duration wait = const Duration(seconds: 4)}) async {
+class LanScanResult {
+  final List<CastDevice> devices; // DLNA media renderers (castable)
+  final int responders; // how many hosts answered SSDP at all
+  const LanScanResult(this.devices, this.responders);
+}
+
+Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) async {
   final prefix = await _subnetPrefix();
-  if (prefix == null) return [];
+  if (prefix == null) return const LanScanResult([], 0);
   final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
   final locations = <String>{};
   socket.listen((event) {
@@ -719,16 +725,31 @@ Future<List<CastDevice>> scanLanDlna({Duration wait = const Duration(seconds: 4)
     final loc = RegExp(r'LOCATION:\s*(\S+)', caseSensitive: false).firstMatch(resp)?.group(1);
     if (loc != null) locations.add(loc.trim());
   });
-  for (var i = 1; i <= 254; i++) {
-    final host = '$prefix$i';
-    final msg = 'M-SEARCH * HTTP/1.1\r\n'
-        'HOST: $host:1900\r\n'
-        'MAN: "ssdp:discover"\r\n'
-        'ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n';
-    try {
-      socket.send(msg.codeUnits, InternetAddress(host), 1900);
-    } catch (_) {}
+  // Try several search targets — some devices answer only specific STs over unicast.
+  const targets = [
+    'urn:schemas-upnp-org:device:MediaRenderer:1',
+    'urn:schemas-upnp-org:service:AVTransport:1',
+    'ssdp:all',
+  ];
+  void send(String host) {
+    for (final st in targets) {
+      final msg = 'M-SEARCH * HTTP/1.1\r\n'
+          'HOST: $host:1900\r\n'
+          'MAN: "ssdp:discover"\r\n'
+          'ST: $st\r\n\r\n';
+      try {
+        socket.send(msg.codeUnits, InternetAddress(host), 1900);
+      } catch (_) {}
+    }
   }
+
+  for (var i = 1; i <= 254; i++) {
+    send('$prefix$i');
+  }
+  // Also hit the multicast group (works on Android; iOS may ignore it — harmless).
+  try {
+    send('239.255.255.250');
+  } catch (_) {}
   await Future.delayed(wait);
   socket.close();
 
@@ -740,7 +761,7 @@ Future<List<CastDevice>> scanLanDlna({Duration wait = const Duration(seconds: 4)
       devices.add(desc.toCastDevice());
     }
   }
-  return devices;
+  return LanScanResult(devices, locations.length);
 }
 
 /// Cast device picker — two tabs: LAN scan (works now on iOS) and the
@@ -753,7 +774,7 @@ class CastScreen extends StatefulWidget {
 }
 
 class _CastScreenState extends State<CastScreen> {
-  Future<List<CastDevice>>? _scan;
+  Future<LanScanResult>? _scan;
 
   @override
   void initState() {
@@ -788,7 +809,7 @@ class _CastScreenState extends State<CastScreen> {
           body: TabBarView(
             children: [
               // Tab 1: LAN unicast scan (works on the current unsigned iOS build).
-              FutureBuilder<List<CastDevice>>(
+              FutureBuilder<LanScanResult>(
                 future: _scan,
                 builder: (_, snap) {
                   if (snap.connectionState != ConnectionState.done) {
@@ -800,14 +821,22 @@ class _CastScreenState extends State<CastScreen> {
                           Text('Scanning your Wi-Fi for TVs…', textAlign: TextAlign.center),
                         ])));
                   }
-                  final devices = snap.data ?? const <CastDevice>[];
+                  final result = snap.data ?? const LanScanResult([], 0);
+                  final devices = result.devices;
+                  // Tailored message tells us which failure we're hitting.
+                  final emptyMsg = result.responders == 0
+                      ? 'No devices responded on your Wi-Fi.\n\n'
+                          '• Allow Local Network: iOS Settings → (this app) → Local Network = ON\n'
+                          '• Phone and TV must be on the SAME Wi-Fi (not guest network)'
+                      : 'Found ${result.responders} network device(s), but none expose a DLNA player.\n\n'
+                          'Your LG TV may have DLNA off or removed on newer webOS.\n'
+                          'Try: TV Settings → enable Screen/Smart Share — or use AirPlay in the player.';
                   return Column(children: [
                     Expanded(
                       child: devices.isEmpty
-                          ? const Center(child: Padding(
-                              padding: EdgeInsets.all(24),
-                              child: Text('No TVs found.\nMake sure the TV is on and on the same Wi-Fi.',
-                                  textAlign: TextAlign.center)))
+                          ? Center(child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(emptyMsg, textAlign: TextAlign.center)))
                           : ListView(children: devices.map(_deviceTile).toList()),
                     ),
                     Padding(
