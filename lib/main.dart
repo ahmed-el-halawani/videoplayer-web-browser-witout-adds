@@ -93,13 +93,13 @@ class History {
 
 class BrowserTab {
   final int id;
-  final int? windowId; // set when this tab adopts a blocked popup window
   InAppWebViewController? controller;
   String title = 'New Tab';
   String url;
   bool canBack = false;
   bool canForward = false;
-  BrowserTab(this.id, this.url, {this.windowId});
+  bool allowNext = true; // next main-frame nav is one we triggered -> don't block it
+  BrowserTab(this.id, this.url);
 }
 
 class BrowserScreen extends StatefulWidget {
@@ -131,6 +131,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         allowsInlineMediaPlayback: true,
         mediaPlaybackRequiresUserGesture: false,
         iframeAllowFullscreen: true,
+        useShouldOverrideUrlLoading: true,
       );
 
   void _addTab([String? url]) {
@@ -154,34 +155,24 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   void _go() {
+    _tab.allowNext = true;
     _tab.controller?.loadUrl(urlRequest: URLRequest(url: WebUri(toLoadUrl(_urlBar.text))));
   }
 
-  void _popupBlocked(BrowserTab tab) {
+  void _popupBlocked(WebUri? url) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: const Text('Popup blocked'),
-      action: SnackBarAction(
-        label: 'Open',
-        onPressed: () {
-          final i = _tabs.indexOf(tab);
-          if (i != -1) {
-            setState(() {
-              _active = i;
-              _urlBar.text = tab.url;
-            });
-          }
-        },
-      ),
+      action: url == null
+          ? null
+          : SnackBarAction(label: 'Open', onPressed: () => _addTab(url.toString())),
     ));
   }
 
   Widget _buildWebView(BrowserTab tab) => InAppWebView(
         key: ValueKey(tab.id),
-        windowId: tab.windowId,
-        // windowId tabs receive their URL from the adopted popup window, not here.
-        initialUrlRequest: tab.windowId == null ? URLRequest(url: WebUri(tab.url)) : null,
+        initialUrlRequest: URLRequest(url: WebUri(tab.url)),
         initialSettings: _settings,
         onWebViewCreated: (c) => tab.controller = c,
         onTitleChanged: (c, t) => setState(() => tab.title = (t == null || t.isEmpty) ? tab.title : t),
@@ -197,18 +188,39 @@ class _BrowserScreenState extends State<BrowserScreen> {
             setState(() => _urlBar.text = uri.toString());
           }
         },
-        // ponytail: every window.open / target=_blank is parked in a hidden tab,
-        // never the current one. Returning true stops the WebView's default
-        // (which would load it inline). The snackbar's Open reveals the tab.
+        // Layer 1: window.open / target=_blank. Return true = we handle it, so the
+        // WebView discards it (nothing loads). Snackbar's Open loads it in a new tab.
         onCreateWindow: (c, action) async {
-          final popup = BrowserTab(
-            _nextId++,
-            action.request.url?.toString() ?? 'Popup',
-            windowId: action.windowId,
-          );
-          setState(() => _tabs.add(popup)); // added but not made active = hidden
-          _popupBlocked(popup);
-          return true; // we handle the window; do not load it inline
+          _popupBlocked(action.request.url);
+          return true;
+        },
+        // Layer 2: same-tab popunder/redirect ads. Cancel main-frame navigations the
+        // user didn't trigger; let real clicks, typed URLs, and same-site loads through.
+        shouldOverrideUrlLoading: (c, action) async {
+          final uri = action.request.url;
+          if (uri == null || action.isForMainFrame == false) {
+            return NavigationActionPolicy.ALLOW;
+          }
+          if (tab.allowNext) {
+            tab.allowNext = false; // our own load (URL bar / new tab) — allow once
+            return NavigationActionPolicy.ALLOW;
+          }
+          final t = action.navigationType;
+          final userDriven = action.hasGesture == true ||
+              t == NavigationType.LINK_ACTIVATED ||
+              t == NavigationType.BACK_FORWARD ||
+              t == NavigationType.RELOAD ||
+              t == NavigationType.FORM_SUBMITTED;
+          if (userDriven) return NavigationActionPolicy.ALLOW;
+          final cur = Uri.tryParse(tab.url)?.host ?? '';
+          if (uri.host.isEmpty || uri.host == cur) {
+            return NavigationActionPolicy.ALLOW; // same-site redirect, not a popup
+          }
+          // ponytail: main-frame + no gesture + cross-host = popunder/redirect ad.
+          // Ceiling: may catch rare no-gesture cross-site redirects (some shorteners/
+          // OAuth). Tap "Open" to allow, or loosen this check if a trusted site breaks.
+          _popupBlocked(uri);
+          return NavigationActionPolicy.CANCEL;
         },
       );
 
