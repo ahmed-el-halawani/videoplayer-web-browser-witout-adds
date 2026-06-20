@@ -119,6 +119,7 @@ class BrowserTab {
   final List<DetectedVideo> videos = [];
   final Set<String> seen = {};
   String? poster;
+  bool sheetAutoShown = false; // auto-open the video sheet once per page load
   BrowserTab(this.id, this.url);
 }
 
@@ -264,6 +265,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: const Text('Popup blocked'),
+      duration: const Duration(seconds: 2),
       action: url == null
           ? null
           : SnackBarAction(label: 'Open', onPressed: () => _addTab(url.toString())),
@@ -275,6 +277,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     tab.videos.clear();
     tab.seen.clear();
     tab.poster = null;
+    tab.sheetAutoShown = false;
     if (mounted) setState(() {});
   }
 
@@ -286,6 +289,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
         poster: (poster != null && poster.isNotEmpty) ? poster : tab.poster);
     tab.videos.add(v);
     if (mounted) setState(() {});
+    // Auto-open the sheet once when the active tab gets its first video.
+    if (identical(tab, _tab) && !tab.sheetAutoShown && tab.videos.length == 1) {
+      tab.sheetAutoShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openVideoSheet();
+      });
+    }
     _detectQuality(v).then((q) {
       v.quality = q;
       if (mounted) setState(() {});
