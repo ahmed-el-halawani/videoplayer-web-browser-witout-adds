@@ -1,10 +1,12 @@
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, HttpClient;
+import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
 
 void main() async {
   _selfCheck();
@@ -93,6 +95,16 @@ class History {
   }
 }
 
+class DetectedVideo {
+  final String url;
+  String title;
+  String quality;
+  String? poster;
+  DetectedVideo(this.url, this.title, {this.quality = '', this.poster});
+}
+
+bool _isVideoUrl(String u) => RegExp(r'\.(m3u8|mp4|mpd)(\?|$)', caseSensitive: false).hasMatch(u);
+
 class BrowserTab {
   final int id;
   InAppWebViewController? controller;
@@ -101,6 +113,9 @@ class BrowserTab {
   bool canBack = false;
   bool canForward = false;
   bool allowNext = true; // a nav we triggered (URL bar / new tab) — don't treat as popup
+  final List<DetectedVideo> videos = [];
+  final Set<String> seen = {};
+  String? poster;
   BrowserTab(this.id, this.url);
 }
 
@@ -155,6 +170,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         useHybridComposition: true,
         mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         useShouldOverrideUrlLoading: true,
+        useOnLoadResource: true,
       );
 
   // ponytail: minimal "stealth" — patch the checks anti-WebView scripts use. webdriver
@@ -166,6 +182,30 @@ class _BrowserScreenState extends State<BrowserScreen> {
           source: '''
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             ${Platform.isIOS ? '' : "if (!window.chrome) { window.chrome = { runtime: {} }; }"}
+          ''',
+        ),
+        // Video sniffer: hook fetch / XHR / <video> loadstart, report media URLs + poster.
+        UserScript(
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          source: r'''
+            (function(){
+              function poster(){
+                var v=document.querySelector('video');
+                var og=document.querySelector('meta[property="og:image"]');
+                return (v&&v.poster)||(og&&og.content)||'';
+              }
+              function vid(u){ return u && /\.(m3u8|mp4|mpd)(\?|$)/i.test(u); }
+              function report(u){
+                if(!vid(u)) return;
+                try{ u=new URL(u, location.href).href; }catch(e){}
+                window.flutter_inappwebview.callHandler('video',{url:u,poster:poster(),title:document.title});
+              }
+              var of=window.fetch;
+              window.fetch=function(){ try{var a=arguments[0]; report(a&&(a.url||a));}catch(e){} return of.apply(this,arguments); };
+              var oo=XMLHttpRequest.prototype.open;
+              XMLHttpRequest.prototype.open=function(m,u){ try{report(u);}catch(e){} return oo.apply(this,arguments); };
+              document.addEventListener('loadstart',function(e){ try{var t=e.target; if(t&&t.currentSrc) report(t.currentSrc);}catch(e){} },true);
+            })();
           ''',
         ),
       ]);
@@ -220,13 +260,117 @@ class _BrowserScreenState extends State<BrowserScreen> {
     ));
   }
 
+  void _addVideo(BrowserTab tab, String url, {String? poster, String? title}) {
+    if (!_isVideoUrl(url) || tab.seen.contains(url)) return;
+    tab.seen.add(url);
+    if (poster != null && poster.isNotEmpty) tab.poster = poster;
+    final v = DetectedVideo(url, (title != null && title.isNotEmpty) ? title : tab.title,
+        poster: (poster != null && poster.isNotEmpty) ? poster : tab.poster);
+    tab.videos.add(v);
+    if (mounted) setState(() {});
+    _detectQuality(v).then((q) {
+      v.quality = q;
+      if (mounted) setState(() {});
+    });
+  }
+
+  // ponytail: best-effort quality label, not a full HLS/DASH parser.
+  Future<String> _detectQuality(DetectedVideo v) async {
+    final lower = v.url.toLowerCase();
+    if (lower.contains('.mpd')) return 'DASH';
+    if (lower.contains('.mp4')) {
+      final m = RegExp(r'(2160|1440|1080|720|480|360)').firstMatch(lower);
+      return m != null ? '${m.group(1)}p' : 'MP4';
+    }
+    if (lower.contains('.m3u8')) {
+      try {
+        final client = HttpClient();
+        final req = await client.getUrl(Uri.parse(v.url));
+        req.headers.set('User-Agent', 'Mozilla/5.0');
+        final resp = await req.close();
+        final body = await resp.transform(const Utf8Decoder(allowMalformed: true)).join();
+        client.close();
+        final heights = RegExp(r'RESOLUTION=\d+x(\d+)', caseSensitive: false)
+            .allMatches(body)
+            .map((m) => int.parse(m.group(1)!))
+            .toList();
+        if (heights.isNotEmpty) return '${heights.reduce((a, b) => a > b ? a : b)}p';
+        return 'HLS';
+      } catch (_) {
+        return 'HLS';
+      }
+    }
+    return '';
+  }
+
+  Future<void> _openVideoSheet() async {
+    await showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) {
+        final vids = _tab.videos;
+        if (vids.isEmpty) {
+          return const SizedBox(height: 160, child: Center(child: Text('No videos detected on this page')));
+        }
+        return ListView.separated(
+          shrinkWrap: true,
+          itemCount: vids.length,
+          separatorBuilder: (_, i) => const Divider(height: 0),
+          itemBuilder: (_, i) {
+            final v = vids[i];
+            return ListTile(
+              leading: SizedBox(
+                width: 64,
+                height: 40,
+                child: v.poster == null
+                    ? const Icon(Icons.movie)
+                    : Image.network(v.poster!, fit: BoxFit.cover,
+                        errorBuilder: (c, e, s) => const Icon(Icons.movie)),
+              ),
+              title: Text(v.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(v.url, maxLines: 1, overflow: TextOverflow.ellipsis),
+              trailing: v.quality.isEmpty ? null : Chip(label: Text(v.quality)),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => PlayerScreen(url: v.url, title: v.title)),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildWebView(BrowserTab tab) => InAppWebView(
         key: ValueKey(tab.id),
         initialUrlRequest: URLRequest(url: WebUri(tab.url)),
         initialSettings: _settings,
         initialUserScripts: _stealth,
-        onWebViewCreated: (c) => tab.controller = c,
+        onWebViewCreated: (c) {
+          tab.controller = c;
+          c.addJavaScriptHandler(
+            handlerName: 'video',
+            callback: (args) {
+              if (args.isEmpty || args[0] is! Map) return;
+              final m = args[0] as Map;
+              _addVideo(tab, '${m['url']}', poster: m['poster']?.toString(), title: m['title']?.toString());
+            },
+          );
+        },
         onTitleChanged: (c, t) => setState(() => tab.title = (t == null || t.isEmpty) ? tab.title : t),
+        onLoadStart: (c, uri) {
+          // Clear detected videos when the page reloads or navigates away.
+          tab.videos.clear();
+          tab.seen.clear();
+          tab.poster = null;
+          if (mounted) setState(() {});
+        },
+        onLoadResource: (c, resource) {
+          final u = resource.url?.toString();
+          if (u != null) _addVideo(tab, u);
+        },
         onLoadStop: (c, uri) async {
           tab.url = uri?.toString() ?? tab.url;
           tab.canBack = await c.canGoBack();
@@ -298,6 +442,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
             tooltip: _adBlock ? 'Ad blocking on' : 'Ad blocking off',
             icon: Icon(_adBlock ? Icons.shield : Icons.shield_outlined),
             onPressed: _toggleAdBlock,
+          ),
+          IconButton(
+            tooltip: 'Detected videos',
+            icon: _tab.videos.isEmpty
+                ? const Icon(Icons.movie_outlined)
+                : Badge(label: Text('${_tab.videos.length}'), child: const Icon(Icons.movie)),
+            onPressed: _openVideoSheet,
           ),
           IconButton(
             icon: const Icon(Icons.history),
@@ -393,6 +544,71 @@ class _UrlBar extends StatelessWidget {
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
           suffixIcon: IconButton(icon: const Icon(Icons.refresh), onPressed: onReload),
+        ),
+      );
+}
+
+class PlayerScreen extends StatefulWidget {
+  final String url;
+  final String title;
+  const PlayerScreen({super.key, required this.url, required this.title});
+  @override
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends State<PlayerScreen> {
+  VideoPlayerController? _video;
+  ChewieController? _chewie;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      await v.initialize();
+      if (!mounted) {
+        v.dispose();
+        return;
+      }
+      setState(() {
+        _video = v;
+        _chewie = ChewieController(
+          videoPlayerController: v,
+          autoPlay: true,
+          allowFullScreen: true,
+          aspectRatio: v.value.aspectRatio,
+        );
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _chewie?.dispose();
+    _video?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        body: Center(
+          child: _error != null
+              ? Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text("Can't play this video.\n$_error",
+                      textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
+              : _chewie == null
+                  ? const CircularProgressIndicator()
+                  : Chewie(controller: _chewie!),
         ),
       );
 }
