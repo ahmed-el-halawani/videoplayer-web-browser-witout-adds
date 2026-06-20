@@ -143,6 +143,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
         javaScriptEnabled: true,
         domStorageEnabled: true,
         databaseEnabled: true,
+        // Video fixes (Android): composite the video surface, and don't block HTTP
+        // media segments served inside an HTTPS page.
+        useHybridComposition: true,
+        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
       );
 
   // ponytail: minimal "stealth" — a Chrome UA with no window.chrome / webdriver=undefined
