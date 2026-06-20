@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -99,6 +100,7 @@ class BrowserTab {
   String url;
   bool canBack = false;
   bool canForward = false;
+  bool allowNext = true; // a nav we triggered (URL bar / new tab) — don't treat as popup
   BrowserTab(this.id, this.url);
 }
 
@@ -135,10 +137,15 @@ class _BrowserScreenState extends State<BrowserScreen> {
         allowsInlineMediaPlayback: true,
         mediaPlaybackRequiresUserGesture: false,
         iframeAllowFullscreen: true,
-        // ponytail: spoof a normal browser UA so anti-WebView scripts stop redirecting.
-        // Ceiling: covers the 95% UA-sniffing case; not TLS fingerprinting.
-        userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+        // Platform-correct UA: real iPhone Safari on iOS, real Chrome on Android.
+        // ponytail: Android WebView's default UA has the "wv" token that anti-WebView
+        // scripts sniff; iOS WKWebView is already Safari-like. A *mismatched* UA (Android
+        // string on iOS) makes sites serve incompatible video players, so keep them apart.
+        userAgent: Platform.isIOS
+            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) '
+                'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+            : 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
         thirdPartyCookiesEnabled: true,
         javaScriptEnabled: true,
         domStorageEnabled: true,
@@ -147,16 +154,18 @@ class _BrowserScreenState extends State<BrowserScreen> {
         // media segments served inside an HTTPS page.
         useHybridComposition: true,
         mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+        useShouldOverrideUrlLoading: true,
       );
 
-  // ponytail: minimal "stealth" — a Chrome UA with no window.chrome / webdriver=undefined
-  // is a dead giveaway; patch the two checks most anti-WebView scripts use.
+  // ponytail: minimal "stealth" — patch the checks anti-WebView scripts use. webdriver
+  // everywhere; window.chrome only on Android (real iOS Safari has none, so faking it
+  // would be its own tell that triggers redirects).
   UnmodifiableListView<UserScript> get _stealth => UnmodifiableListView([
         UserScript(
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
           source: '''
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            if (!window.chrome) { window.chrome = { runtime: {} }; }
+            ${Platform.isIOS ? '' : "if (!window.chrome) { window.chrome = { runtime: {} }; }"}
           ''',
         ),
       ]);
@@ -196,6 +205,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   void _go() {
+    _tab.allowNext = true;
     _tab.controller?.loadUrl(urlRequest: URLRequest(url: WebUri(toLoadUrl(_urlBar.text))));
   }
 
@@ -229,13 +239,39 @@ class _BrowserScreenState extends State<BrowserScreen> {
             setState(() => _urlBar.text = uri.toString());
           }
         },
-        // Only new-window/new-tab popups (window.open / target=_blank) are blocked.
-        // Return true = we handle it, so the WebView discards it (nothing loads).
-        // Same-tab navigations and in-page overlays are left alone so sites still work.
-        // The snackbar's Open loads the popup URL in a new tab on demand.
+        // Layer 1: new-window/new-tab popups (window.open / target=_blank).
         onCreateWindow: (c, action) async {
           _popupBlocked(action.request.url);
-          return true;
+          return true; // discard the popup; snackbar's Open loads it in a new tab
+        },
+        // Layer 2: same-tab popunder/redirect ads. Cancel ONLY main-frame navigations
+        // the user didn't trigger that jump to a different site. Real clicks, typed
+        // URLs, back/forward, and same-site redirects pass through; in-page overlays
+        // (not navigations) are never affected.
+        shouldOverrideUrlLoading: (c, action) async {
+          final uri = action.request.url;
+          if (uri == null || action.isForMainFrame == false) {
+            return NavigationActionPolicy.ALLOW;
+          }
+          if (tab.allowNext) {
+            tab.allowNext = false;
+            return NavigationActionPolicy.ALLOW;
+          }
+          final t = action.navigationType;
+          final userDriven = action.hasGesture == true ||
+              t == NavigationType.LINK_ACTIVATED ||
+              t == NavigationType.BACK_FORWARD ||
+              t == NavigationType.RELOAD ||
+              t == NavigationType.FORM_SUBMITTED;
+          if (userDriven) return NavigationActionPolicy.ALLOW;
+          final cur = Uri.tryParse(tab.url)?.host ?? '';
+          if (uri.host.isEmpty || uri.host == cur) {
+            return NavigationActionPolicy.ALLOW; // same-site redirect, not a popup
+          }
+          // ponytail: main-frame + no gesture + cross-host = popunder/redirect ad.
+          // Ceiling: tap "Open" if it ever catches a legit cross-site redirect.
+          _popupBlocked(uri);
+          return NavigationActionPolicy.CANCEL;
         },
       );
 
