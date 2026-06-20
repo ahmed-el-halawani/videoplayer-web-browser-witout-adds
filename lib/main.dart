@@ -6,6 +6,7 @@ import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_to_airplay/flutter_to_airplay.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
@@ -746,7 +747,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        appBar: AppBar(
+          title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          // iOS: native AirPlay button — routes the AVPlayer video to AppleTV/AirPlay TVs
+          // (e.g. LG AirPlay 2). iOS handles discovery, so no entitlement/multicast issues.
+          actions: [if (Platform.isIOS) const AirPlayIconButton(color: Colors.white)],
+        ),
         body: Center(
           child: _error != null
               ? Padding(

@@ -40,6 +40,7 @@ dependencies:
   video_player: ^2.11.1
   share_plus: ^13.1.0
   dart_cast: ^0.6.0
+  flutter_to_airplay: ^2.1.0
 
 dev_dependencies:
   flutter_test:
