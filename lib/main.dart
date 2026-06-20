@@ -98,7 +98,6 @@ class BrowserTab {
   String url;
   bool canBack = false;
   bool canForward = false;
-  bool allowNext = true; // next main-frame nav is one we triggered -> don't block it
   BrowserTab(this.id, this.url);
 }
 
@@ -114,6 +113,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   final _urlBar = TextEditingController();
   int _active = 0;
   int _nextId = 0;
+  bool _adBlock = true;
 
   BrowserTab get _tab => _tabs[_active];
 
@@ -122,17 +122,33 @@ class _BrowserScreenState extends State<BrowserScreen> {
     super.initState();
     _tabs.add(BrowserTab(_nextId++, 'https://www.google.com'));
     _urlBar.text = _tabs[0].url;
+    SharedPreferences.getInstance().then((p) {
+      if (p.getBool('adblock') == false && mounted) setState(() => _adBlock = false);
+    });
   }
 
   InAppWebViewSettings get _settings => InAppWebViewSettings(
-        contentBlockers: widget.blockers,
+        contentBlockers: _adBlock ? widget.blockers : <ContentBlocker>[],
         supportMultipleWindows: true,
         javaScriptCanOpenWindowsAutomatically: false,
         allowsInlineMediaPlayback: true,
         mediaPlaybackRequiresUserGesture: false,
         iframeAllowFullscreen: true,
-        useShouldOverrideUrlLoading: true,
       );
+
+  Future<void> _toggleAdBlock() async {
+    setState(() => _adBlock = !_adBlock);
+    (await SharedPreferences.getInstance()).setBool('adblock', _adBlock);
+    for (final t in _tabs) {
+      await t.controller?.setSettings(settings: _settings);
+      t.controller?.reload();
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_adBlock ? 'Ad blocking on' : 'Ad blocking off')),
+      );
+    }
+  }
 
   void _addTab([String? url]) {
     setState(() {
@@ -155,7 +171,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   void _go() {
-    _tab.allowNext = true;
     _tab.controller?.loadUrl(urlRequest: URLRequest(url: WebUri(toLoadUrl(_urlBar.text))));
   }
 
@@ -188,39 +203,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
             setState(() => _urlBar.text = uri.toString());
           }
         },
-        // Layer 1: window.open / target=_blank. Return true = we handle it, so the
-        // WebView discards it (nothing loads). Snackbar's Open loads it in a new tab.
+        // Only new-window/new-tab popups (window.open / target=_blank) are blocked.
+        // Return true = we handle it, so the WebView discards it (nothing loads).
+        // Same-tab navigations and in-page overlays are left alone so sites still work.
+        // The snackbar's Open loads the popup URL in a new tab on demand.
         onCreateWindow: (c, action) async {
           _popupBlocked(action.request.url);
           return true;
-        },
-        // Layer 2: same-tab popunder/redirect ads. Cancel main-frame navigations the
-        // user didn't trigger; let real clicks, typed URLs, and same-site loads through.
-        shouldOverrideUrlLoading: (c, action) async {
-          final uri = action.request.url;
-          if (uri == null || action.isForMainFrame == false) {
-            return NavigationActionPolicy.ALLOW;
-          }
-          if (tab.allowNext) {
-            tab.allowNext = false; // our own load (URL bar / new tab) — allow once
-            return NavigationActionPolicy.ALLOW;
-          }
-          final t = action.navigationType;
-          final userDriven = action.hasGesture == true ||
-              t == NavigationType.LINK_ACTIVATED ||
-              t == NavigationType.BACK_FORWARD ||
-              t == NavigationType.RELOAD ||
-              t == NavigationType.FORM_SUBMITTED;
-          if (userDriven) return NavigationActionPolicy.ALLOW;
-          final cur = Uri.tryParse(tab.url)?.host ?? '';
-          if (uri.host.isEmpty || uri.host == cur) {
-            return NavigationActionPolicy.ALLOW; // same-site redirect, not a popup
-          }
-          // ponytail: main-frame + no gesture + cross-host = popunder/redirect ad.
-          // Ceiling: may catch rare no-gesture cross-site redirects (some shorteners/
-          // OAuth). Tap "Open" to allow, or loosen this check if a trusted site breaks.
-          _popupBlocked(uri);
-          return NavigationActionPolicy.CANCEL;
         },
       );
 
@@ -242,6 +231,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
           IconButton(
             icon: const Icon(Icons.arrow_forward),
             onPressed: _tab.canForward ? () => _tab.controller?.goForward() : null,
+          ),
+          IconButton(
+            tooltip: _adBlock ? 'Ad blocking on' : 'Ad blocking off',
+            icon: Icon(_adBlock ? Icons.shield : Icons.shield_outlined),
+            onPressed: _toggleAdBlock,
           ),
           IconButton(
             icon: const Icon(Icons.history),
