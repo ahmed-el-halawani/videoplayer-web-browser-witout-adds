@@ -134,6 +134,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
         allowsInlineMediaPlayback: true,
         mediaPlaybackRequiresUserGesture: false,
         iframeAllowFullscreen: true,
+        // ponytail: spoof a normal browser UA so anti-WebView scripts stop redirecting.
+        // Ceiling: covers the 95% UA-sniffing case; not navigator.webdriver / TLS fingerprint.
+        userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+        thirdPartyCookiesEnabled: true,
       );
 
   Future<void> _toggleAdBlock() async {
