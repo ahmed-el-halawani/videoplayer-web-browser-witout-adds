@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:chewie/chewie.dart';
 import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_to_airplay/flutter_to_airplay.dart';
 import 'package:media_kit/media_kit.dart';
@@ -984,34 +984,81 @@ class _CastScreenState extends State<CastScreen> {
 }
 
 /// Picks the player engine per the user's Settings choice.
-class PlayerScreen extends StatelessWidget {
+/// Swipe up = maximize (landscape, immersive, hide app bar); swipe down = minimize,
+/// or close the player if already minimized. (Not applied to the iOS native player,
+/// which has its own gestures.)
+class PlayerScreen extends StatefulWidget {
   final String url;
   final String title;
   final String? referer;
   final String kind; // 'native' | 'video_player' | 'media_kit'
   const PlayerScreen(
       {super.key, required this.url, required this.title, this.referer, this.kind = 'media_kit'});
+  @override
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends State<PlayerScreen> {
+  bool _max = false;
+
+  bool get _nativeIOS => widget.kind == 'native' && Platform.isIOS;
+
+  void _apply() {
+    SystemChrome.setPreferredOrientations(_max
+        ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
+        : [DeviceOrientation.portraitUp]);
+    SystemChrome.setEnabledSystemUIMode(
+        _max ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
+  }
+
+  void _onSwipe(double v) {
+    if (v < -200 && !_max) {
+      setState(() => _max = true);
+      _apply();
+    } else if (v > 200) {
+      if (_max) {
+        setState(() => _max = false);
+        _apply();
+      } else {
+        Navigator.of(context).maybePop();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    super.dispose();
+  }
+
+  Widget _engine() {
+    switch (widget.kind) {
+      case 'native':
+        return Platform.isIOS
+            ? FlutterAVPlayerView(urlString: widget.url)
+            : _ChewiePlayer(url: widget.url);
+      case 'video_player':
+        return _ChewiePlayer(url: widget.url);
+      default:
+        return _MediaKitPlayer(url: widget.url, referer: widget.referer);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    Widget body;
-    switch (kind) {
-      case 'native':
-        // iOS: AVPlayerViewController (built-in AirPlay). Android has no separate
-        // native engine here, so fall back to video_player/Chewie (ExoPlayer).
-        body = Platform.isIOS
-            ? FlutterAVPlayerView(urlString: url)
-            : _ChewiePlayer(url: url);
-        break;
-      case 'video_player':
-        body = _ChewiePlayer(url: url);
-        break;
-      default: // media_kit
-        body = _MediaKitPlayer(url: url, referer: referer);
+    Widget body = _engine();
+    if (!_nativeIOS) {
+      body = GestureDetector(
+        onVerticalDragEnd: (d) => _onSwipe(d.primaryVelocity ?? 0),
+        child: body,
+      );
     }
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+      appBar: _max
+          ? null
+          : AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
       body: body,
     );
   }
@@ -1046,7 +1093,13 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
   }
 
   @override
-  Widget build(BuildContext context) => Video(controller: _controller);
+  Widget build(BuildContext context) => MaterialVideoControlsTheme(
+        // Disable the default vertical volume/brightness drags so our up/down
+        // swipe (maximize/minimize) wins the gesture.
+        normal: const MaterialVideoControlsThemeData(volumeGesture: false, brightnessGesture: false),
+        fullscreen: const MaterialVideoControlsThemeData(volumeGesture: false, brightnessGesture: false),
+        child: Video(controller: _controller),
+      );
 }
 
 class _ChewiePlayer extends StatefulWidget {
