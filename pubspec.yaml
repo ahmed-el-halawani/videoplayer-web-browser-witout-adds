@@ -44,6 +44,7 @@ dependencies:
   chewie: ^1.14.1
   video_player: ^2.11.1
   flutter_to_airplay: ^2.1.0
+  wakelock_plus: ^1.6.1
 
 dev_dependencies:
   flutter_test:

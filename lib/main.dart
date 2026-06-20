@@ -12,6 +12,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 void main() async {
   _selfCheck();
@@ -1033,10 +1034,13 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
     super.initState();
     _player.open(Media(widget.url,
         httpHeaders: widget.referer == null ? null : {'Referer': widget.referer!}));
+    // Keep the screen on only while actually playing.
+    _player.stream.playing.listen((playing) => WakelockPlus.toggle(enable: playing));
   }
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _player.dispose();
     super.dispose();
   }
@@ -1063,6 +1067,8 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
     _init();
   }
 
+  void _wake() => WakelockPlus.toggle(enable: _video?.value.isPlaying ?? false);
+
   Future<void> _init() async {
     try {
       final v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
@@ -1071,6 +1077,7 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
         v.dispose();
         return;
       }
+      v.addListener(_wake); // screen on while playing, off when paused/ended
       setState(() {
         _video = v;
         _chewie = ChewieController(
@@ -1087,6 +1094,8 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
 
   @override
   void dispose() {
+    _video?.removeListener(_wake);
+    WakelockPlus.disable();
     _chewie?.dispose();
     _video?.dispose();
     super.dispose();
