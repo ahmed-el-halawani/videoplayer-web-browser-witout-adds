@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:io' show Platform, HttpClient;
 import 'package:chewie/chewie.dart';
+import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -133,8 +134,15 @@ class _BrowserScreenState extends State<BrowserScreen> {
   int _active = 0;
   int _nextId = 0;
   bool _adBlock = true;
+  CastService? _cast;
 
   BrowserTab get _tab => _tabs[_active];
+
+  @override
+  void dispose() {
+    _cast?.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -312,6 +320,104 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return '';
   }
 
+  CastService _castService() => _cast ??= CastService(
+        discoveryProviders: [
+          DlnaDiscoveryProvider(),
+          ChromecastDiscoveryProvider(),
+          AirPlayDiscoveryProvider(),
+        ],
+        sessionFactory: (device) {
+          switch (device.protocol) {
+            case CastProtocol.chromecast:
+              return ChromecastSession(device: device);
+            case CastProtocol.airplay:
+              return AirPlaySession(device);
+            case CastProtocol.dlna:
+              return DlnaSession.fromDevice(device);
+          }
+        },
+      );
+
+  CastMediaType _mediaTypeFor(String url) {
+    final l = url.toLowerCase();
+    if (l.contains('.m3u8')) return CastMediaType.hls;
+    if (l.contains('.mkv')) return CastMediaType.mkv;
+    if (l.contains('.ts')) return CastMediaType.mpegTs;
+    return CastMediaType.mp4;
+  }
+
+  IconData _protocolIcon(CastProtocol p) => switch (p) {
+        CastProtocol.airplay => Icons.airplay,
+        CastProtocol.chromecast => Icons.cast,
+        CastProtocol.dlna => Icons.tv,
+      };
+
+  Future<void> _castVideo(DetectedVideo v) async {
+    final service = _castService();
+    await showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sctx) => StreamBuilder<List<CastDevice>>(
+        stream: service.startDiscovery(timeout: const Duration(seconds: 15)),
+        builder: (ctx, snap) {
+          final devices = snap.data ?? const <CastDevice>[];
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: const Text('Cast to'),
+                trailing: snap.connectionState == ConnectionState.done
+                    ? null
+                    : const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
+              if (devices.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('Searching for TVs on your Wi-Fi…\nMake sure the TV is on the same network.',
+                      textAlign: TextAlign.center),
+                ),
+              ...devices.map((d) => ListTile(
+                    leading: Icon(_protocolIcon(d.protocol)),
+                    title: Text(d.name),
+                    subtitle: Text(d.protocol.name),
+                    onTap: () {
+                      Navigator.of(sctx).pop();
+                      _connectAndPlay(service, d, v);
+                    },
+                  )),
+              const SizedBox(height: 12),
+            ],
+          );
+        },
+      ),
+    );
+    service.stopDiscovery();
+  }
+
+  Future<void> _connectAndPlay(CastService service, CastDevice device, DetectedVideo v) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(content: Text('Connecting to ${device.name}…')));
+    try {
+      final session = await service.connect(device);
+      await session.loadMedia(CastMedia(
+        url: v.url,
+        type: _mediaTypeFor(v.url),
+        httpHeaders: {'Referer': _tab.url}, // dodge CDN 403s on protected streams
+        title: v.title,
+        imageUrl: v.poster,
+      ));
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(
+        content: Text('Casting to ${device.name}'),
+        action: SnackBarAction(label: 'Stop', onPressed: () => session.disconnect()),
+        duration: const Duration(seconds: 8),
+      ));
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('Cast failed: $e')));
+    }
+  }
+
   void _showVideoActions(DetectedVideo v) {
     showDialog(
       context: context,
@@ -334,10 +440,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             title: const Text('Cast to TV'),
             onTap: () {
               Navigator.of(dctx).pop();
-              // ponytail: cast UI present; dart_cast wiring is the deferred feature.
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Casting not set up yet')),
-              );
+              _castVideo(v);
             },
           ),
           ListTile(
