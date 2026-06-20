@@ -137,12 +137,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
   int _nextId = 0;
   bool _adBlock = true;
   CastService? _cast;
+  final ValueNotifier<int> _videosTick = ValueNotifier(0); // bumps so an open sheet refreshes
 
   BrowserTab get _tab => _tabs[_active];
 
   @override
   void dispose() {
     _cast?.dispose();
+    _videosTick.dispose();
     super.dispose();
   }
 
@@ -278,6 +280,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     tab.seen.clear();
     tab.poster = null;
     tab.sheetAutoShown = false;
+    _videosTick.value++;
     if (mounted) setState(() {});
   }
 
@@ -288,6 +291,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final v = DetectedVideo(url, (title != null && title.isNotEmpty) ? title : tab.title,
         poster: (poster != null && poster.isNotEmpty) ? poster : tab.poster);
     tab.videos.add(v);
+    _videosTick.value++;
     if (mounted) setState(() {});
     // Auto-open the sheet once when the active tab gets its first video.
     if (identical(tab, _tab) && !tab.sheetAutoShown && tab.videos.length == 1) {
@@ -298,6 +302,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
     _detectQuality(v).then((q) {
       v.quality = q;
+      _videosTick.value++;
       if (mounted) setState(() {});
     });
   }
@@ -431,34 +436,38 @@ class _BrowserScreenState extends State<BrowserScreen> {
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (_) {
-        final vids = _tab.videos;
-        if (vids.isEmpty) {
-          return const SizedBox(height: 160, child: Center(child: Text('No videos detected on this page')));
-        }
-        return ListView.separated(
-          shrinkWrap: true,
-          itemCount: vids.length,
-          separatorBuilder: (_, i) => const Divider(height: 0),
-          itemBuilder: (_, i) {
-            final v = vids[i];
-            return ListTile(
-              leading: SizedBox(
-                width: 64,
-                height: 40,
-                child: v.poster == null
-                    ? const Icon(Icons.movie)
-                    : Image.network(v.poster!, fit: BoxFit.cover,
-                        errorBuilder: (c, e, s) => const Icon(Icons.movie)),
-              ),
-              title: Text(v.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(v.url, maxLines: 1, overflow: TextOverflow.ellipsis),
-              trailing: v.quality.isEmpty ? null : Chip(label: Text(v.quality)),
-              onTap: () => _showVideoActions(v),
-            );
-          },
-        );
-      },
+      // Rebuilds live as videos are detected/cleared while the sheet is open.
+      builder: (_) => ValueListenableBuilder<int>(
+        valueListenable: _videosTick,
+        builder: (_, tick, child) {
+          final vids = _tab.videos;
+          if (vids.isEmpty) {
+            return const SizedBox(height: 160, child: Center(child: Text('No videos detected on this page')));
+          }
+          return ListView.separated(
+            shrinkWrap: true,
+            itemCount: vids.length,
+            separatorBuilder: (_, i) => const Divider(height: 0),
+            itemBuilder: (_, i) {
+              final v = vids[i];
+              return ListTile(
+                leading: SizedBox(
+                  width: 64,
+                  height: 40,
+                  child: v.poster == null
+                      ? const Icon(Icons.movie)
+                      : Image.network(v.poster!, fit: BoxFit.cover,
+                          errorBuilder: (c, e, s) => const Icon(Icons.movie)),
+                ),
+                title: Text(v.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(v.url, maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: v.quality.isEmpty ? null : Chip(label: Text(v.quality)),
+                onTap: () => _showVideoActions(v),
+              );
+            },
+          );
+        },
+      ),
     );
   }
 
