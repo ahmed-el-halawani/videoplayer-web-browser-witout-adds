@@ -1096,8 +1096,12 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
   Widget build(BuildContext context) => MaterialVideoControlsTheme(
         // Disable the default vertical volume/brightness drags so our up/down
         // swipe (maximize/minimize) wins the gesture.
-        normal: const MaterialVideoControlsThemeData(volumeGesture: false, brightnessGesture: false),
-        fullscreen: const MaterialVideoControlsThemeData(volumeGesture: false, brightnessGesture: false),
+        // Keep double-tap-to-seek (left = back, right = forward); drop volume/brightness
+        // vertical drags so our up/down swipe (maximize/minimize) wins.
+        normal: const MaterialVideoControlsThemeData(
+            volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
+        fullscreen: const MaterialVideoControlsThemeData(
+            volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
         child: Video(controller: _controller),
       );
 }
@@ -1155,15 +1159,19 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
   }
 
   @override
-  Widget build(BuildContext context) => Center(
-        child: _error != null
-            ? Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text("Can't play this video.\n$_error",
-                    textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
-            : _chewie == null
-                ? const CircularProgressIndicator()
-                : Chewie(controller: _chewie!),
+  Widget build(BuildContext context) => Padding(
+        // Lift the controls off the very bottom edge (clears the home-indicator/nav bar).
+        padding: EdgeInsets.only(bottom: MediaQuery.viewPaddingOf(context).bottom + 24),
+        child: Center(
+          child: _error != null
+              ? Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text("Can't play this video.\n$_error",
+                      textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
+              : _chewie == null
+                  ? const CircularProgressIndicator()
+                  : Chewie(controller: _chewie!),
+        ),
       );
 }
 
