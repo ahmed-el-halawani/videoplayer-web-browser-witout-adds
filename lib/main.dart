@@ -297,7 +297,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_adBlock ? 'Ad blocking on' : 'Ad blocking off')),
+        SnackBar(
+          content: Text(_adBlock ? 'Ad blocking on' : 'Ad blocking off'),
+          duration: const Duration(seconds: 2),
+          showCloseIcon: true,
+        ),
       );
     }
   }
@@ -343,6 +347,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: const Text('Popup blocked'),
       duration: const Duration(seconds: 2),
+      showCloseIcon: true,
       action: url == null
           ? null
           : SnackBarAction(label: 'Open', onPressed: () => _addTab(url.toString())),
@@ -486,7 +491,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   Future<void> _connectAndPlay(CastService service, CastDevice device, DetectedVideo v) async {
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(content: Text('Connecting to ${device.name}…')));
+    messenger.showSnackBar(SnackBar(
+      content: Text('Connecting to ${device.name}…'),
+      duration: const Duration(seconds: 2),
+      showCloseIcon: true,
+    ));
     try {
       final session = await service.connect(device);
       await session.loadMedia(CastMedia(
@@ -500,11 +509,16 @@ class _BrowserScreenState extends State<BrowserScreen> {
       messenger.showSnackBar(SnackBar(
         content: Text('Casting to ${device.name}'),
         action: SnackBarAction(label: 'Stop', onPressed: () => session.disconnect()),
-        duration: const Duration(seconds: 8),
+        duration: const Duration(seconds: 2),
+        showCloseIcon: true,
       ));
     } catch (e) {
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(content: Text('Cast failed: $e')));
+      messenger.showSnackBar(SnackBar(
+        content: Text('Cast failed: $e'),
+        duration: const Duration(seconds: 2),
+        showCloseIcon: true,
+      ));
     }
   }
 
@@ -1127,7 +1141,13 @@ class PlayerScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        extendBodyBehindAppBar: true, // video shows under the transparent toolbar
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          foregroundColor: Colors.white,
+          title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
         body: _engine(),
       );
 }
