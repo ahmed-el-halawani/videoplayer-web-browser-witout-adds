@@ -13,6 +13,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 
 void main() async {
   _selfCheck();
@@ -70,6 +71,9 @@ void _selfCheck() {
   assert(isUrl('') == false);
   assert(toLoadUrl('example.com') == 'https://example.com');
   assert(toLoadUrl('cute cats').startsWith('https://www.google.com/search?q='));
+  assert(youtubeId('https://www.youtube.com/watch?v=abc123XYZ_0') == 'abc123XYZ_0');
+  assert(youtubeId('https://youtu.be/abc123XYZ_0') == 'abc123XYZ_0');
+  assert(youtubeId('https://example.com/watch?v=x') == null);
 }
 
 class BrowserApp extends StatelessWidget {
@@ -120,6 +124,24 @@ class DetectedVideo {
 
 bool _isVideoUrl(String u) => RegExp(r'\.(m3u8|mp4|mpd)(\?|$)', caseSensitive: false).hasMatch(u);
 
+/// Extracts a YouTube video id from watch / youtu.be / shorts URLs, else null.
+String? youtubeId(String url) {
+  final u = Uri.tryParse(url);
+  if (u == null) return null;
+  final host = u.host.replaceFirst('www.', '');
+  if (host == 'youtu.be') {
+    return u.pathSegments.isNotEmpty ? u.pathSegments.first : null;
+  }
+  if (host == 'youtube.com' || host == 'm.youtube.com' || host == 'music.youtube.com') {
+    if (u.pathSegments.isNotEmpty && u.pathSegments.first == 'shorts') {
+      return u.pathSegments.length > 1 ? u.pathSegments[1] : null;
+    }
+    final v = u.queryParameters['v'];
+    if (v != null && v.isNotEmpty) return v;
+  }
+  return null;
+}
+
 class BrowserTab {
   final int id;
   InAppWebViewController? controller;
@@ -132,6 +154,7 @@ class BrowserTab {
   final Set<String> seen = {};
   String? poster;
   bool sheetAutoShown = false; // auto-open the video sheet once per page load
+  String? lastYoutubeId; // avoid reopening the YouTube player for the same video
   BrowserTab(this.id, this.url);
 }
 
@@ -307,6 +330,23 @@ class _BrowserScreenState extends State<BrowserScreen> {
           ? null
           : SnackBarAction(label: 'Open', onPressed: () => _addTab(url.toString())),
     ));
+  }
+
+  // Auto-open YouTube watch/shorts URLs in the dedicated iframe player.
+  void _maybeYoutube(BrowserTab tab, String url) {
+    final id = youtubeId(url);
+    if (id == null) {
+      tab.lastYoutubeId = null;
+      return;
+    }
+    if (id == tab.lastYoutubeId || !identical(tab, _tab) || !mounted) return;
+    tab.lastYoutubeId = id;
+    // Pause the page's media so it doesn't keep playing behind the player.
+    tab.controller?.evaluateJavascript(
+        source: "document.querySelectorAll('video,audio').forEach(function(m){m.pause();});");
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => YoutubeScreen(videoId: id, title: tab.title)),
+    );
   }
 
   void _clearVideos(BrowserTab tab) {
@@ -535,6 +575,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (uri != null) History.add(uri.toString(), tab.title);
           if (identical(tab, _tab) && mounted) setState(() => _urlBar.text = tab.url);
           _persistTabs(); // remember the latest URL per tab
+          if (uri != null) _maybeYoutube(tab, uri.toString());
         },
         onUpdateVisitedHistory: (c, uri, isReload) {
           // Clear on any URL change too (covers SPA pushState navigations).
@@ -545,6 +586,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (identical(tab, _tab) && uri != null && mounted) {
             setState(() => _urlBar.text = uri.toString());
           }
+          if (uri != null) _maybeYoutube(tab, uri.toString());
+        },
+        // In-page HTML5 fullscreen (non-YouTube sites): lock landscape + immersive.
+        onEnterFullscreen: (c) {
+          SystemChrome.setPreferredOrientations(
+              [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        },
+        onExitFullscreen: (c) {
+          SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
         },
         // Layer 1: new-window/new-tab popups (window.open / target=_blank).
         onCreateWindow: (c, action) async {
@@ -1038,6 +1090,36 @@ class PlayerScreen extends StatelessWidget {
         backgroundColor: Colors.black,
         appBar: AppBar(title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis)),
         body: _engine(),
+      );
+}
+
+/// Dedicated YouTube player using the official IFrame Player API.
+class YoutubeScreen extends StatefulWidget {
+  final String videoId;
+  final String title;
+  const YoutubeScreen({super.key, required this.videoId, required this.title});
+  @override
+  State<YoutubeScreen> createState() => _YoutubeScreenState();
+}
+
+class _YoutubeScreenState extends State<YoutubeScreen> {
+  late final YoutubePlayerController _c = YoutubePlayerController.fromVideoId(
+    videoId: widget.videoId,
+    autoPlay: true,
+    params: const YoutubePlayerParams(showControls: true, showFullscreenButton: true),
+  );
+
+  @override
+  void dispose() {
+    _c.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        body: Center(child: YoutubePlayer(controller: _c, aspectRatio: 16 / 9)),
       );
 }
 
