@@ -361,9 +361,31 @@ class _BrowserScreenState extends State<BrowserScreen> {
     tab.lastYoutubeId = id;
     tab.controller?.evaluateJavascript(
         source: "document.querySelectorAll('video,audio').forEach(function(m){m.pause();});");
+    final title = tab.title;
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => YoutubeScreen(videoId: id, title: tab.title, kind: _player)),
+      MaterialPageRoute(
+        builder: (_) => YoutubeScreen(
+          videoId: id,
+          title: title,
+          kind: _player,
+          onStream: (url) => _addYoutubeStream(tab, url, title, id),
+        ),
+      ),
     );
+  }
+
+  // Add an extracted YouTube stream to the detected-videos sheet so it can be cast.
+  void _addYoutubeStream(BrowserTab tab, String url, String title, String id) {
+    if (tab.seen.contains(url)) return;
+    tab.seen.add(url);
+    tab.videos.add(DetectedVideo(
+      url,
+      title.isEmpty ? 'YouTube video' : title,
+      quality: 'YouTube',
+      poster: 'https://img.youtube.com/vi/$id/hqdefault.jpg',
+    ));
+    _videosTick.value++;
+    if (mounted) setState(() {});
   }
 
   void _clearVideos(BrowserTab tab) {
@@ -1115,7 +1137,9 @@ class YoutubeScreen extends StatefulWidget {
   final String videoId;
   final String title;
   final String kind;
-  const YoutubeScreen({super.key, required this.videoId, required this.title, required this.kind});
+  final void Function(String url)? onStream; // report the extracted URL (for casting)
+  const YoutubeScreen(
+      {super.key, required this.videoId, required this.title, required this.kind, this.onStream});
   @override
   State<YoutubeScreen> createState() => _YoutubeScreenState();
 }
@@ -1142,7 +1166,9 @@ class _YoutubeScreenState extends State<YoutubeScreen> {
       // ponytail: muxed = video+audio in one URL (caps ~720p) so the native player
       // gets sound + picture without merging adaptive tracks.
       final s = muxed.withHighestBitrate();
-      if (mounted) setState(() => _url = s.url.toString());
+      final url = s.url.toString();
+      widget.onStream?.call(url); // make it castable from the videos sheet
+      if (mounted) setState(() => _url = url);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
