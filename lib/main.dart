@@ -1014,84 +1014,31 @@ class _CastScreenState extends State<CastScreen> {
 }
 
 /// Picks the player engine per the user's Settings choice.
-/// Swipe up = maximize (landscape, immersive, hide app bar); swipe down = minimize,
-/// or close the player if already minimized. (Not applied to the iOS native player,
-/// which has its own gestures.)
-class PlayerScreen extends StatefulWidget {
+class PlayerScreen extends StatelessWidget {
   final String url;
   final String title;
   final String? referer;
   final String kind; // 'native' | 'video_player' | 'media_kit'
   const PlayerScreen(
       {super.key, required this.url, required this.title, this.referer, this.kind = 'media_kit'});
-  @override
-  State<PlayerScreen> createState() => _PlayerScreenState();
-}
-
-class _PlayerScreenState extends State<PlayerScreen> {
-  bool _max = false;
-
-  bool get _nativeIOS => widget.kind == 'native' && Platform.isIOS;
-
-  void _apply() {
-    SystemChrome.setPreferredOrientations(_max
-        ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
-        : [DeviceOrientation.portraitUp]);
-    SystemChrome.setEnabledSystemUIMode(
-        _max ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
-  }
-
-  void _onSwipe(double v) {
-    if (v < -200 && !_max) {
-      setState(() => _max = true);
-      _apply();
-    } else if (v > 200) {
-      if (_max) {
-        setState(() => _max = false);
-        _apply();
-      } else {
-        Navigator.of(context).maybePop();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    super.dispose();
-  }
 
   Widget _engine() {
-    switch (widget.kind) {
+    switch (kind) {
       case 'native':
-        return Platform.isIOS
-            ? FlutterAVPlayerView(urlString: widget.url)
-            : _ChewiePlayer(url: widget.url);
+        return Platform.isIOS ? FlutterAVPlayerView(urlString: url) : _ChewiePlayer(url: url);
       case 'video_player':
-        return _ChewiePlayer(url: widget.url);
+        return _ChewiePlayer(url: url);
       default:
-        return _MediaKitPlayer(url: widget.url, referer: widget.referer);
+        return _MediaKitPlayer(url: url, referer: referer);
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    Widget body = _engine();
-    if (!_nativeIOS) {
-      body = GestureDetector(
-        onVerticalDragEnd: (d) => _onSwipe(d.primaryVelocity ?? 0),
-        child: body,
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        body: _engine(),
       );
-    }
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: _max
-          ? null
-          : AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
-      body: body,
-    );
-  }
 }
 
 class _MediaKitPlayer extends StatefulWidget {
@@ -1127,12 +1074,11 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
         // Lift controls off the very bottom edge (clears home-indicator/nav bar).
         padding: EdgeInsets.only(bottom: MediaQuery.viewPaddingOf(context).bottom + 24),
         child: MaterialVideoControlsTheme(
-          // Keep double-tap-to-seek (left = back, right = forward); drop volume/brightness
-          // vertical drags so our up/down swipe (maximize/minimize) wins.
+          // Default media_kit controls, but no double-tap-to-seek (per request).
           normal: const MaterialVideoControlsThemeData(
-              volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
+              volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
           fullscreen: const MaterialVideoControlsThemeData(
-              volumeGesture: false, brightnessGesture: false, seekOnDoubleTap: true),
+              volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
           child: Video(controller: _controller),
         ),
       );
@@ -1157,15 +1103,6 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
   }
 
   void _wake() => WakelockPlus.toggle(enable: _video?.value.isPlaying ?? false);
-
-  void _seek(int seconds) {
-    final v = _video;
-    if (v == null) return;
-    var t = v.value.position + Duration(seconds: seconds);
-    if (t < Duration.zero) t = Duration.zero;
-    if (t > v.value.duration) t = v.value.duration;
-    v.seekTo(t);
-  }
 
   Future<void> _init() async {
     try {
@@ -1211,34 +1148,7 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
                       textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
               : _chewie == null
                   ? const CircularProgressIndicator()
-                  : Stack(children: [
-                      Chewie(controller: _chewie!),
-                      // Double-tap left = back 10s, right = forward 10s. Translucent so
-                      // single taps still reach Chewie's controls; bottom area left free
-                      // for the control bar.
-                      Positioned.fill(
-                        child: Column(children: [
-                          Expanded(
-                            flex: 4,
-                            child: Row(children: [
-                              Expanded(
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onDoubleTap: () => _seek(-10),
-                                ),
-                              ),
-                              Expanded(
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onDoubleTap: () => _seek(10),
-                                ),
-                              ),
-                            ]),
-                          ),
-                          const Expanded(flex: 1, child: SizedBox()), // keep control bar tappable
-                        ]),
-                      ),
-                    ]),
+                  : Chewie(controller: _chewie!),
         ),
       );
 }
