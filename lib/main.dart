@@ -1119,22 +1119,35 @@ class _CastScreenState extends State<CastScreen> {
 }
 
 /// Picks the player engine per the user's Settings choice.
-class PlayerScreen extends StatelessWidget {
+class PlayerScreen extends StatefulWidget {
   final String url;
   final String title;
   final String? referer;
   final String kind; // 'native' | 'video_player' | 'media_kit'
   const PlayerScreen(
       {super.key, required this.url, required this.title, this.referer, this.kind = 'media_kit'});
+  @override
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends State<PlayerScreen> {
+  bool _playing = false;
+
+  void _onPlaying(bool p) {
+    if (p != _playing && mounted) setState(() => _playing = p);
+  }
 
   Widget _engine() {
-    switch (kind) {
+    switch (widget.kind) {
       case 'native':
-        return Platform.isIOS ? FlutterAVPlayerView(urlString: url) : _ChewiePlayer(url: url);
+        // Native iOS player has its own controls; no play-state callback available.
+        return Platform.isIOS
+            ? FlutterAVPlayerView(urlString: widget.url)
+            : _ChewiePlayer(url: widget.url, onPlaying: _onPlaying);
       case 'video_player':
-        return _ChewiePlayer(url: url);
+        return _ChewiePlayer(url: widget.url, onPlaying: _onPlaying);
       default:
-        return _MediaKitPlayer(url: url, referer: referer);
+        return _MediaKitPlayer(url: widget.url, referer: widget.referer, onPlaying: _onPlaying);
     }
   }
 
@@ -1142,12 +1155,15 @@ class PlayerScreen extends StatelessWidget {
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
         extendBodyBehindAppBar: true, // video shows under the transparent toolbar
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          foregroundColor: Colors.white,
-          title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        ),
+        // Toolbar auto-hides while playing, returns when paused/stopped.
+        appBar: _playing
+            ? null
+            : AppBar(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                foregroundColor: Colors.white,
+                title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
         body: _engine(),
       );
 }
@@ -1225,7 +1241,8 @@ class _YoutubeScreenState extends State<YoutubeScreen> {
 class _MediaKitPlayer extends StatefulWidget {
   final String url;
   final String? referer;
-  const _MediaKitPlayer({required this.url, this.referer});
+  final ValueChanged<bool>? onPlaying;
+  const _MediaKitPlayer({required this.url, this.referer, this.onPlaying});
   @override
   State<_MediaKitPlayer> createState() => _MediaKitPlayerState();
 }
@@ -1239,8 +1256,10 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
     super.initState();
     _player.open(Media(widget.url,
         httpHeaders: widget.referer == null ? null : {'Referer': widget.referer!}));
-    // Keep the screen on only while actually playing.
-    _player.stream.playing.listen((playing) => WakelockPlus.toggle(enable: playing));
+    _player.stream.playing.listen((playing) {
+      WakelockPlus.toggle(enable: playing); // screen on only while playing
+      widget.onPlaying?.call(playing);
+    });
   }
 
   @override
@@ -1251,23 +1270,20 @@ class _MediaKitPlayerState extends State<_MediaKitPlayer> {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-        // Lift controls off the very bottom edge (clears home-indicator/nav bar).
-        padding: EdgeInsets.only(bottom: MediaQuery.viewPaddingOf(context).bottom + 24),
-        child: MaterialVideoControlsTheme(
-          // Default media_kit controls, but no double-tap-to-seek (per request).
-          normal: const MaterialVideoControlsThemeData(
-              volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
-          fullscreen: const MaterialVideoControlsThemeData(
-              volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
-          child: Video(controller: _controller),
-        ),
+  Widget build(BuildContext context) => MaterialVideoControlsTheme(
+        // Default media_kit controls, but no double-tap-to-seek (per request).
+        normal: const MaterialVideoControlsThemeData(
+            volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
+        fullscreen: const MaterialVideoControlsThemeData(
+            volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
+        child: Video(controller: _controller),
       );
 }
 
 class _ChewiePlayer extends StatefulWidget {
   final String url;
-  const _ChewiePlayer({required this.url});
+  final ValueChanged<bool>? onPlaying;
+  const _ChewiePlayer({required this.url, this.onPlaying});
   @override
   State<_ChewiePlayer> createState() => _ChewiePlayerState();
 }
@@ -1283,7 +1299,11 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
     _init();
   }
 
-  void _wake() => WakelockPlus.toggle(enable: _video?.value.isPlaying ?? false);
+  void _wake() {
+    final playing = _video?.value.isPlaying ?? false;
+    WakelockPlus.toggle(enable: playing); // screen on while playing
+    widget.onPlaying?.call(playing);
+  }
 
   Future<void> _init() async {
     try {
@@ -1318,19 +1338,15 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-        // Lift the controls off the very bottom edge (clears the home-indicator/nav bar).
-        padding: EdgeInsets.only(bottom: MediaQuery.viewPaddingOf(context).bottom + 24),
-        child: Center(
-          child: _error != null
-              ? Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text("Can't play this video.\n$_error",
-                      textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
-              : _chewie == null
-                  ? const CircularProgressIndicator()
-                  : Chewie(controller: _chewie!),
-        ),
+  Widget build(BuildContext context) => Center(
+        child: _error != null
+            ? Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text("Can't play this video.\n$_error",
+                    textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)))
+            : _chewie == null
+                ? const CircularProgressIndicator()
+                : Chewie(controller: _chewie!),
       );
 }
 
