@@ -222,6 +222,23 @@ class _BrowserScreenState extends State<BrowserScreen> {
             ${Platform.isIOS ? '' : "if (!window.chrome) { window.chrome = { runtime: {} }; }"}
           ''',
         ),
+        // Force inline playback flags on every <video> (helps WKWebView render
+        // MSE-driven players like YouTube instead of freezing on the first frame).
+        UserScript(
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          source: r'''
+            (function(){
+              function fix(){
+                document.querySelectorAll('video').forEach(function(v){
+                  try{ v.setAttribute('playsinline',''); v.setAttribute('webkit-playsinline',''); v.playsInline=true; }catch(e){}
+                });
+              }
+              try{ new MutationObserver(fix).observe(document.documentElement,{childList:true,subtree:true}); }catch(e){}
+              document.addEventListener('DOMContentLoaded', fix);
+              fix();
+            })();
+          ''',
+        ),
         // Video sniffer: hook fetch / XHR / <video> loadstart, report media URLs + poster.
         UserScript(
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
