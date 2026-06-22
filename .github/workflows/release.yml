@@ -26,6 +26,7 @@ jobs:
 
   # Step 2: each platform builds, then uploads its file to the existing release.
   # softprops/action-gh-release appends files when the tag already exists.
+  # Phone/tablet APK (mobile flavor).
   android:
     needs: release
     runs-on: ubuntu-latest
@@ -37,11 +38,28 @@ jobs:
         with: { channel: stable }
       - run: flutter pub get
       # ponytail: release APK is debug-signed -> installable for sideloading, not Play Store.
-      - run: flutter build apk --release --build-name=$VERSION --build-number=${{ github.run_number }}
+      - run: flutter build apk --release --flavor mobile -t lib/main.dart --build-name=$VERSION --build-number=${{ github.run_number }}
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: build/app/outputs/flutter-apk/app-mobile-release.apk
+
+  # Android TV APK (tv flavor, Leanback launcher, D-pad UI).
+  android_tv:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable }
+      - run: flutter pub get
+      - run: flutter build apk --release --flavor tv -t lib/main_tv.dart --build-name=$VERSION --build-number=${{ github.run_number }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          files: build/app/outputs/flutter-apk/app-tv-release.apk
 
   ios:
     needs: release

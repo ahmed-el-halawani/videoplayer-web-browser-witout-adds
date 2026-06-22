@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Leanback launcher banner (320x180). Simple branded placeholder. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:fillColor="#3F51B5" android:pathData="M0,0 h320 v180 h-320 z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M132,70 l40,20 l-40,20 z"/>
+</vector>

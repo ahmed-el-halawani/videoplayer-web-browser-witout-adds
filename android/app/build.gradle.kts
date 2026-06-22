@@ -37,6 +37,18 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Build variants: phone/tablet vs Android TV (Leanback). Pick with `flutter --flavor`.
+    flavorDimensions += "device"
+    productFlavors {
+        create("mobile") {
+            dimension = "device"
+        }
+        create("tv") {
+            dimension = "device"
+            applicationIdSuffix = ".tv" // so both can coexist on a device
+        }
+    }
 }
 
 flutter {
