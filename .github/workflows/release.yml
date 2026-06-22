@@ -72,7 +72,11 @@ jobs:
       # ponytail: unsigned IPA (no Apple cert in CI). Hand-package .app into Payload/.
       # Add code-signing secrets + `flutter build ipa --export-options-plist` for the App Store.
       - run: flutter build ios --release --no-codesign --build-name=$VERSION --build-number=${{ github.run_number }}
-      - name: Package unsigned IPA
+      # Ad-hoc sign so the Mach-O has a well-formed signature/__LINKEDIT. Without this,
+      # SideStore/ldid hits "_assert(): end >= size - 0x10" re-signing Flutter binaries.
+      - name: Ad-hoc codesign
+        run: codesign --force --deep --sign - build/ios/iphoneos/Runner.app
+      - name: Package IPA
         run: |
           cd build/ios/iphoneos
           mkdir Payload
