@@ -11,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yte;
 
 void main() async {
   _selfCheck();
@@ -117,6 +118,39 @@ class DetectedVideo {
 
 bool _isVideoUrl(String u) => RegExp(r'\.(m3u8|mp4|mpd)(\?|$)', caseSensitive: false).hasMatch(u);
 
+/// Extracts a YouTube video id from watch / youtu.be / shorts URLs, else null.
+String? youtubeId(String url) {
+  final u = Uri.tryParse(url);
+  if (u == null) return null;
+  final host = u.host.replaceFirst('www.', '');
+  if (host == 'youtu.be') {
+    return u.pathSegments.isNotEmpty ? u.pathSegments.first : null;
+  }
+  if (host == 'youtube.com' || host == 'm.youtube.com' || host == 'music.youtube.com') {
+    if (u.pathSegments.isNotEmpty && u.pathSegments.first == 'shorts') {
+      return u.pathSegments.length > 1 ? u.pathSegments[1] : null;
+    }
+    final v = u.queryParameters['v'];
+    if (v != null && v.isNotEmpty) return v;
+  }
+  return null;
+}
+
+/// Resolves a YouTube id to a direct muxed (video+audio) stream URL, or null.
+Future<String?> extractYoutubeStreamUrl(String id) async {
+  final yt = yte.YoutubeExplode();
+  try {
+    final manifest = await yt.videos.streamsClient.getManifest(id);
+    final muxed = manifest.muxed;
+    if (muxed.isEmpty) return null;
+    return muxed.withHighestBitrate().url.toString();
+  } catch (_) {
+    return null;
+  } finally {
+    yt.close();
+  }
+}
+
 class BrowserTab {
   final int id;
   InAppWebViewController? controller;
@@ -129,6 +163,7 @@ class BrowserTab {
   final Set<String> seen = {};
   String? poster;
   bool sheetAutoShown = false; // auto-open the video sheet once per page load
+  String? lastYoutubeId; // avoid re-extracting the same YouTube video
   BrowserTab(this.id, this.url);
 }
 
@@ -335,8 +370,28 @@ class _BrowserScreenState extends State<BrowserScreen> {
     tab.seen.clear();
     tab.poster = null;
     tab.sheetAutoShown = false;
+    tab.lastYoutubeId = null;
     _videosTick.value++;
     if (mounted) setState(() {});
+  }
+
+  // YouTube still plays in the browser; we also extract its stream into the media
+  // sheet so it can be played in-app / cast / shared.
+  Future<void> _maybeExtractYoutube(BrowserTab tab, String url) async {
+    final id = youtubeId(url);
+    if (id == null || id == tab.lastYoutubeId) return;
+    tab.lastYoutubeId = id;
+    final stream = await extractYoutubeStreamUrl(id);
+    if (stream == null || !mounted || tab.seen.contains(stream)) return;
+    tab.seen.add(stream);
+    tab.videos.add(DetectedVideo(
+      stream,
+      tab.title.isEmpty ? 'YouTube video' : tab.title,
+      quality: 'YouTube',
+      poster: 'https://img.youtube.com/vi/$id/hqdefault.jpg',
+    ));
+    _videosTick.value++;
+    setState(() {});
   }
 
   void _addVideo(BrowserTab tab, String url, {String? poster, String? title}) {
@@ -564,6 +619,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (uri != null) History.add(uri.toString(), tab.title);
           if (identical(tab, _tab) && mounted) setState(() => _urlBar.text = tab.url);
           _persistTabs(); // remember the latest URL per tab
+          if (uri != null) _maybeExtractYoutube(tab, uri.toString());
         },
         onUpdateVisitedHistory: (c, uri, isReload) {
           // Clear on any URL change too (covers SPA pushState navigations).
@@ -574,6 +630,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (identical(tab, _tab) && uri != null && mounted) {
             setState(() => _urlBar.text = uri.toString());
           }
+          if (uri != null) _maybeExtractYoutube(tab, uri.toString());
         },
         // In-page HTML5 fullscreen: lock landscape + immersive.
         onEnterFullscreen: (c) {

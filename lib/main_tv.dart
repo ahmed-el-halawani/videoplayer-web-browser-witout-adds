@@ -9,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:share_plus/share_plus.dart';
 
-import 'main.dart' show toLoadUrl, DetectedVideo, PlayerScreen;
+import 'main.dart' show toLoadUrl, youtubeId, extractYoutubeStreamUrl, DetectedVideo, PlayerScreen;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,6 +62,7 @@ class _TvBrowserState extends State<TvBrowser> {
   final Set<String> _seen = {};
   String _pageUrl = 'https://www.google.com';
   String _title = '';
+  String? _lastYoutubeId;
 
   // Virtual cursor (logical px), only active in cursor mode.
   bool _cursorMode = false;
@@ -110,11 +111,28 @@ class _TvBrowserState extends State<TvBrowser> {
   }
 
   void _clearVideos() {
+    _lastYoutubeId = null;
     if (_videos.isEmpty && _seen.isEmpty) return;
     setState(() {
       _videos.clear();
       _seen.clear();
     });
+  }
+
+  // YouTube plays in the page; also extract its stream into the media list.
+  Future<void> _maybeExtractYoutube(String url) async {
+    final id = youtubeId(url);
+    if (id == null || id == _lastYoutubeId) return;
+    _lastYoutubeId = id;
+    final stream = await extractYoutubeStreamUrl(id);
+    if (stream == null || !mounted || _seen.contains(stream)) return;
+    _seen.add(stream);
+    setState(() => _videos.add(DetectedVideo(
+          stream,
+          _title.isEmpty ? 'YouTube video' : _title,
+          quality: 'YouTube',
+          poster: 'https://img.youtube.com/vi/$id/hqdefault.jpg',
+        )));
   }
 
   // D-pad handling while in cursor mode.
@@ -207,10 +225,14 @@ class _TvBrowserState extends State<TvBrowser> {
                         if (uri != null) {
                           _pageUrl = uri.toString();
                           _urlBar.text = _pageUrl;
+                          _maybeExtractYoutube(_pageUrl);
                         }
                       },
                       onUpdateVisitedHistory: (c, uri, isReload) {
-                        if (uri != null) _pageUrl = uri.toString();
+                        if (uri != null) {
+                          _pageUrl = uri.toString();
+                          _maybeExtractYoutube(_pageUrl);
+                        }
                       },
                     ),
                     if (_cursorMode)
