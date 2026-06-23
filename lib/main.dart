@@ -11,7 +11,6 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yte;
 
 void main() async {
   _selfCheck();
@@ -68,9 +67,6 @@ void _selfCheck() {
   assert(isUrl('') == false);
   assert(toLoadUrl('example.com') == 'https://example.com');
   assert(toLoadUrl('cute cats').startsWith('https://www.google.com/search?q='));
-  assert(youtubeId('https://www.youtube.com/watch?v=abc123XYZ_0') == 'abc123XYZ_0');
-  assert(youtubeId('https://youtu.be/abc123XYZ_0') == 'abc123XYZ_0');
-  assert(youtubeId('https://example.com/watch?v=x') == null);
 }
 
 class BrowserApp extends StatelessWidget {
@@ -121,24 +117,6 @@ class DetectedVideo {
 
 bool _isVideoUrl(String u) => RegExp(r'\.(m3u8|mp4|mpd)(\?|$)', caseSensitive: false).hasMatch(u);
 
-/// Extracts a YouTube video id from watch / youtu.be / shorts URLs, else null.
-String? youtubeId(String url) {
-  final u = Uri.tryParse(url);
-  if (u == null) return null;
-  final host = u.host.replaceFirst('www.', '');
-  if (host == 'youtu.be') {
-    return u.pathSegments.isNotEmpty ? u.pathSegments.first : null;
-  }
-  if (host == 'youtube.com' || host == 'm.youtube.com' || host == 'music.youtube.com') {
-    if (u.pathSegments.isNotEmpty && u.pathSegments.first == 'shorts') {
-      return u.pathSegments.length > 1 ? u.pathSegments[1] : null;
-    }
-    final v = u.queryParameters['v'];
-    if (v != null && v.isNotEmpty) return v;
-  }
-  return null;
-}
-
 class BrowserTab {
   final int id;
   InAppWebViewController? controller;
@@ -151,7 +129,6 @@ class BrowserTab {
   final Set<String> seen = {};
   String? poster;
   bool sheetAutoShown = false; // auto-open the video sheet once per page load
-  String? lastYoutubeId; // avoid reopening the YouTube player for the same video
   BrowserTab(this.id, this.url);
 }
 
@@ -350,45 +327,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
           ? null
           : SnackBarAction(label: 'Open', onPressed: () => _addTab(url.toString())),
     ));
-  }
-
-  // YouTube can't play in the WebView (MSE not supported under LiveContainer), so
-  // detect YouTube URLs and play the extracted stream in the native player instead.
-  void _maybeYoutube(BrowserTab tab, String url) {
-    final id = youtubeId(url);
-    if (id == null) {
-      tab.lastYoutubeId = null;
-      return;
-    }
-    if (id == tab.lastYoutubeId || !identical(tab, _tab) || !mounted) return;
-    tab.lastYoutubeId = id;
-    tab.controller?.evaluateJavascript(
-        source: "document.querySelectorAll('video,audio').forEach(function(m){m.pause();});");
-    final title = tab.title;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => YoutubeScreen(
-          videoId: id,
-          title: title,
-          kind: _player,
-          onStream: (url) => _addYoutubeStream(tab, url, title, id),
-        ),
-      ),
-    );
-  }
-
-  // Add an extracted YouTube stream to the detected-videos sheet so it can be cast.
-  void _addYoutubeStream(BrowserTab tab, String url, String title, String id) {
-    if (tab.seen.contains(url)) return;
-    tab.seen.add(url);
-    tab.videos.add(DetectedVideo(
-      url,
-      title.isEmpty ? 'YouTube video' : title,
-      quality: 'YouTube',
-      poster: 'https://img.youtube.com/vi/$id/hqdefault.jpg',
-    ));
-    _videosTick.value++;
-    if (mounted) setState(() {});
   }
 
   void _clearVideos(BrowserTab tab) {
@@ -626,7 +564,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (uri != null) History.add(uri.toString(), tab.title);
           if (identical(tab, _tab) && mounted) setState(() => _urlBar.text = tab.url);
           _persistTabs(); // remember the latest URL per tab
-          if (uri != null) _maybeYoutube(tab, uri.toString());
         },
         onUpdateVisitedHistory: (c, uri, isReload) {
           // Clear on any URL change too (covers SPA pushState navigations).
@@ -637,9 +574,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
           if (identical(tab, _tab) && uri != null && mounted) {
             setState(() => _urlBar.text = uri.toString());
           }
-          if (uri != null) _maybeYoutube(tab, uri.toString());
         },
-        // In-page HTML5 fullscreen (non-YouTube sites): lock landscape + immersive.
+        // In-page HTML5 fullscreen: lock landscape + immersive.
         onEnterFullscreen: (c) {
           SystemChrome.setPreferredOrientations(
               [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
@@ -1159,76 +1095,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
         body: _engine(),
       );
-}
-
-/// Extracts a YouTube video's direct stream URL, then plays it in the native player.
-class YoutubeScreen extends StatefulWidget {
-  final String videoId;
-  final String title;
-  final String kind;
-  final void Function(String url)? onStream; // report the extracted URL (for casting)
-  const YoutubeScreen(
-      {super.key, required this.videoId, required this.title, required this.kind, this.onStream});
-  @override
-  State<YoutubeScreen> createState() => _YoutubeScreenState();
-}
-
-class _YoutubeScreenState extends State<YoutubeScreen> {
-  String? _url;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _extract();
-  }
-
-  Future<void> _extract() async {
-    final yt = yte.YoutubeExplode();
-    try {
-      final manifest = await yt.videos.streamsClient.getManifest(widget.videoId);
-      final muxed = manifest.muxed;
-      if (muxed.isEmpty) {
-        if (mounted) setState(() => _error = 'No playable stream found.');
-        return;
-      }
-      // ponytail: muxed = video+audio in one URL (caps ~720p) so the native player
-      // gets sound + picture without merging adaptive tracks.
-      final s = muxed.withHighestBitrate();
-      final url = s.url.toString();
-      widget.onStream?.call(url); // make it castable from the videos sheet
-      if (mounted) setState(() => _url = url);
-    } catch (e) {
-      if (mounted) setState(() => _error = '$e');
-    } finally {
-      yt.close();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_error != null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text("Couldn't load this YouTube video.\n$_error",
-                textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
-          ),
-        ),
-      );
-    }
-    if (_url == null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-    return PlayerScreen(url: _url!, title: widget.title, kind: widget.kind);
-  }
 }
 
 class _ChewiePlayer extends StatefulWidget {

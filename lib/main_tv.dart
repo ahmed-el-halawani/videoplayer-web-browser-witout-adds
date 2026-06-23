@@ -9,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:share_plus/share_plus.dart';
 
-import 'main.dart' show toLoadUrl, youtubeId, DetectedVideo, PlayerScreen, YoutubeScreen;
+import 'main.dart' show toLoadUrl, DetectedVideo, PlayerScreen;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,7 +62,6 @@ class _TvBrowserState extends State<TvBrowser> {
   final Set<String> _seen = {};
   String _pageUrl = 'https://www.google.com';
   String _title = '';
-  String? _lastYoutubeId;
 
   // Virtual cursor (logical px), only active in cursor mode.
   bool _cursorMode = false;
@@ -116,20 +115,6 @@ class _TvBrowserState extends State<TvBrowser> {
       _videos.clear();
       _seen.clear();
     });
-  }
-
-  void _maybeYoutube(String url) {
-    final id = youtubeId(url);
-    if (id == null) {
-      _lastYoutubeId = null;
-      return;
-    }
-    if (id == _lastYoutubeId || !mounted) return;
-    _lastYoutubeId = id;
-    _controller?.evaluateJavascript(
-        source: "document.querySelectorAll('video,audio').forEach(function(m){m.pause();});");
-    Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => YoutubeScreen(videoId: id, title: _title, kind: 'video_player')));
   }
 
   // D-pad handling while in cursor mode.
@@ -222,14 +207,10 @@ class _TvBrowserState extends State<TvBrowser> {
                         if (uri != null) {
                           _pageUrl = uri.toString();
                           _urlBar.text = _pageUrl;
-                          _maybeYoutube(_pageUrl);
                         }
                       },
                       onUpdateVisitedHistory: (c, uri, isReload) {
-                        if (uri != null) {
-                          _pageUrl = uri.toString();
-                          _maybeYoutube(_pageUrl);
-                        }
+                        if (uri != null) _pageUrl = uri.toString();
                       },
                     ),
                     if (_cursorMode)
