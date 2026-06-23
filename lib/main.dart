@@ -1052,56 +1052,42 @@ class _CastScreenState extends State<CastScreen> {
       );
 }
 
-/// Picks the player engine per the user's Settings choice.
-class PlayerScreen extends StatefulWidget {
+/// Picks the player engine per the user's Settings choice. No toolbar — swipe down
+/// anywhere on the player to close it.
+class PlayerScreen extends StatelessWidget {
   final String url;
   final String title;
   final String? referer;
   final String kind; // 'native' | 'video_player'
   const PlayerScreen(
       {super.key, required this.url, required this.title, this.referer, this.kind = 'video_player'});
-  @override
-  State<PlayerScreen> createState() => _PlayerScreenState();
-}
-
-class _PlayerScreenState extends State<PlayerScreen> {
-  bool _playing = false;
-
-  void _onPlaying(bool p) {
-    if (p != _playing && mounted) setState(() => _playing = p);
-  }
 
   Widget _engine() {
     // Native iOS player (AVPlayer + AirPlay) only when explicitly chosen; otherwise
     // video_player/Chewie (works everywhere, supports Referer headers).
-    if (widget.kind == 'native' && Platform.isIOS) {
-      return FlutterAVPlayerView(urlString: widget.url);
+    if (kind == 'native' && Platform.isIOS) {
+      return FlutterAVPlayerView(urlString: url);
     }
-    return _ChewiePlayer(url: widget.url, referer: widget.referer, onPlaying: _onPlaying);
+    return _ChewiePlayer(url: url, referer: referer);
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.black,
-        extendBodyBehindAppBar: true, // video shows under the transparent toolbar
-        // Toolbar auto-hides while playing, returns when paused/stopped.
-        appBar: _playing
-            ? null
-            : AppBar(
-                backgroundColor: Colors.transparent,
-                elevation: 0,
-                foregroundColor: Colors.white,
-                title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-              ),
-        body: _engine(),
+        body: GestureDetector(
+          // Swipe down to close the player (replaces the removed toolbar/back).
+          onVerticalDragEnd: (d) {
+            if ((d.primaryVelocity ?? 0) > 300) Navigator.of(context).maybePop();
+          },
+          child: SizedBox.expand(child: _engine()),
+        ),
       );
 }
 
 class _ChewiePlayer extends StatefulWidget {
   final String url;
   final String? referer;
-  final ValueChanged<bool>? onPlaying;
-  const _ChewiePlayer({required this.url, this.referer, this.onPlaying});
+  const _ChewiePlayer({required this.url, this.referer});
   @override
   State<_ChewiePlayer> createState() => _ChewiePlayerState();
 }
@@ -1117,11 +1103,7 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
     _init();
   }
 
-  void _wake() {
-    final playing = _video?.value.isPlaying ?? false;
-    WakelockPlus.toggle(enable: playing); // screen on while playing
-    widget.onPlaying?.call(playing);
-  }
+  void _wake() => WakelockPlus.toggle(enable: _video?.value.isPlaying ?? false);
 
   Future<void> _init() async {
     try {
