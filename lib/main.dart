@@ -884,6 +884,23 @@ IconData protocolIcon(CastProtocol p) => switch (p) {
 // We M-SEARCH every address in the /24, read LOCATION headers, fetch the device
 // description, and keep the DLNA media renderers.
 
+// Android-only: hold a Wi-Fi MulticastLock so mDNS/SSDP multicast is actually received
+// (Android drops it otherwise). No-op on iOS.
+const _multicastLock = MethodChannel('multicast_lock');
+Future<void> acquireMulticastLock() async {
+  if (!Platform.isAndroid) return;
+  try {
+    await _multicastLock.invokeMethod('acquire');
+  } catch (_) {}
+}
+
+Future<void> releaseMulticastLock() async {
+  if (!Platform.isAndroid) return;
+  try {
+    await _multicastLock.invokeMethod('release');
+  } catch (_) {}
+}
+
 bool _isPrivate(String ip) =>
     ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.');
 
@@ -1022,6 +1039,7 @@ class _CastScreenState extends State<CastScreen> {
   @override
   void initState() {
     super.initState();
+    acquireMulticastLock(); // Android: let mDNS/SSDP multicast through for discovery
     _scan = scanLanDlna();
   }
 
@@ -1029,6 +1047,7 @@ class _CastScreenState extends State<CastScreen> {
   void dispose() {
     _ipCtrl.dispose();
     widget.service.stopDiscovery();
+    releaseMulticastLock();
     super.dispose();
   }
 
@@ -1129,7 +1148,8 @@ class _CastScreenState extends State<CastScreen> {
                       padding: const EdgeInsets.all(24),
                       child: Text(
                         snap.connectionState == ConnectionState.done
-                            ? 'No devices found.\nOn iPhone this works only in the App Store build.'
+                            ? 'No devices found.\nEnsure the TV is on the same Wi-Fi. '
+                                'On sideloaded iPhone use the "Find on network" tab instead.'
                             : 'Searching…',
                         textAlign: TextAlign.center),
                     ));
