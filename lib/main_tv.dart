@@ -7,14 +7,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'main.dart' show toLoadUrl, youtubeId, DetectedVideo, PlayerScreen, YoutubeScreen;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
   runApp(TvApp(blockers: await _loadBlockers()));
 }
 
@@ -131,7 +129,7 @@ class _TvBrowserState extends State<TvBrowser> {
     _controller?.evaluateJavascript(
         source: "document.querySelectorAll('video,audio').forEach(function(m){m.pause();});");
     Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => YoutubeScreen(videoId: id, title: _title, kind: 'media_kit')));
+        builder: (_) => YoutubeScreen(videoId: id, title: _title, kind: 'video_player')));
   }
 
   // D-pad handling while in cursor mode.
@@ -314,7 +312,7 @@ class _TvBrowserState extends State<TvBrowser> {
                               Navigator.of(context).pop();
                               Navigator.of(context).push(MaterialPageRoute(
                                   builder: (_) => PlayerScreen(
-                                      url: v.url, title: v.title, referer: _pageUrl, kind: 'media_kit')));
+                                      url: v.url, title: v.title, referer: _pageUrl, kind: 'video_player')));
                             },
                           ),
                           IconButton(

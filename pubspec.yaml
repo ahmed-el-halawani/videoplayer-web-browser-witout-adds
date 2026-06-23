@@ -38,9 +38,6 @@ dependencies:
   shared_preferences: ^2.5.5
   share_plus: ^13.1.0
   dart_cast: ^0.6.0
-  media_kit: ^1.2.6
-  media_kit_video: ^2.0.1
-  media_kit_libs_video: ^1.0.7
   chewie: ^1.14.1
   video_player: ^2.11.1
   flutter_to_airplay: ^2.1.0

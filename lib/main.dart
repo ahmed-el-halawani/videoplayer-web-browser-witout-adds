@@ -7,8 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_to_airplay/flutter_to_airplay.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
@@ -18,7 +16,6 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yte;
 void main() async {
   _selfCheck();
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
   runApp(BrowserApp(
     blockers: await _loadBlockers(),
@@ -174,7 +171,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   int _active = 0;
   int _nextId = 0;
   bool _adBlock = true;
-  String _player = 'media_kit'; // 'native' | 'video_player' | 'media_kit'
+  String _player = 'video_player'; // 'native' | 'video_player'
   CastService? _cast;
   final ValueNotifier<int> _videosTick = ValueNotifier(0); // bumps so an open sheet refreshes
 
@@ -201,7 +198,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (!mounted) return;
       setState(() {
         if (p.getBool('adblock') == false) _adBlock = false;
-        _player = p.getString('player') ?? 'media_kit';
+        final saved = p.getString('player');
+        _player = (saved == null || saved == 'media_kit') ? 'video_player' : saved;
       });
     });
   }
@@ -1123,9 +1121,9 @@ class PlayerScreen extends StatefulWidget {
   final String url;
   final String title;
   final String? referer;
-  final String kind; // 'native' | 'video_player' | 'media_kit'
+  final String kind; // 'native' | 'video_player'
   const PlayerScreen(
-      {super.key, required this.url, required this.title, this.referer, this.kind = 'media_kit'});
+      {super.key, required this.url, required this.title, this.referer, this.kind = 'video_player'});
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
@@ -1138,17 +1136,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _engine() {
-    switch (widget.kind) {
-      case 'native':
-        // Native iOS player has its own controls; no play-state callback available.
-        return Platform.isIOS
-            ? FlutterAVPlayerView(urlString: widget.url)
-            : _ChewiePlayer(url: widget.url, onPlaying: _onPlaying);
-      case 'video_player':
-        return _ChewiePlayer(url: widget.url, onPlaying: _onPlaying);
-      default:
-        return _MediaKitPlayer(url: widget.url, referer: widget.referer, onPlaying: _onPlaying);
+    // Native iOS player (AVPlayer + AirPlay) only when explicitly chosen; otherwise
+    // video_player/Chewie (works everywhere, supports Referer headers).
+    if (widget.kind == 'native' && Platform.isIOS) {
+      return FlutterAVPlayerView(urlString: widget.url);
     }
+    return _ChewiePlayer(url: widget.url, referer: widget.referer, onPlaying: _onPlaying);
   }
 
   @override
@@ -1238,52 +1231,11 @@ class _YoutubeScreenState extends State<YoutubeScreen> {
   }
 }
 
-class _MediaKitPlayer extends StatefulWidget {
+class _ChewiePlayer extends StatefulWidget {
   final String url;
   final String? referer;
   final ValueChanged<bool>? onPlaying;
-  const _MediaKitPlayer({required this.url, this.referer, this.onPlaying});
-  @override
-  State<_MediaKitPlayer> createState() => _MediaKitPlayerState();
-}
-
-class _MediaKitPlayerState extends State<_MediaKitPlayer> {
-  late final Player _player = Player();
-  late final VideoController _controller = VideoController(_player);
-
-  @override
-  void initState() {
-    super.initState();
-    _player.open(Media(widget.url,
-        httpHeaders: widget.referer == null ? null : {'Referer': widget.referer!}));
-    _player.stream.playing.listen((playing) {
-      WakelockPlus.toggle(enable: playing); // screen on only while playing
-      widget.onPlaying?.call(playing);
-    });
-  }
-
-  @override
-  void dispose() {
-    WakelockPlus.disable();
-    _player.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => MaterialVideoControlsTheme(
-        // Default media_kit controls, but no double-tap-to-seek (per request).
-        normal: const MaterialVideoControlsThemeData(
-            volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
-        fullscreen: const MaterialVideoControlsThemeData(
-            volumeGesture: true, brightnessGesture: true, seekOnDoubleTap: false),
-        child: Video(controller: _controller),
-      );
-}
-
-class _ChewiePlayer extends StatefulWidget {
-  final String url;
-  final ValueChanged<bool>? onPlaying;
-  const _ChewiePlayer({required this.url, this.onPlaying});
+  const _ChewiePlayer({required this.url, this.referer, this.onPlaying});
   @override
   State<_ChewiePlayer> createState() => _ChewiePlayerState();
 }
@@ -1307,7 +1259,10 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
 
   Future<void> _init() async {
     try {
-      final v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      final v = VideoPlayerController.networkUrl(
+        Uri.parse(widget.url),
+        httpHeaders: widget.referer == null ? const {} : {'Referer': widget.referer!},
+      );
       await v.initialize();
       if (!mounted) {
         v.dispose();
@@ -1361,8 +1316,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late String _sel = widget.current;
 
   static const _options = {
-    'media_kit': ('media_kit (recommended)', 'Plays almost any format/codec. No AirPlay.'),
-    'video_player': ('video_player', 'Platform player (ExoPlayer/AVPlayer) with Chewie controls.'),
+    'video_player': ('video_player (recommended)', 'Platform player (ExoPlayer/AVPlayer) with Chewie controls.'),
     'native': ('Native', 'iOS: native player with AirPlay. Android: same as video_player.'),
   };
 
