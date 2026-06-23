@@ -884,19 +884,48 @@ IconData protocolIcon(CastProtocol p) => switch (p) {
 // We M-SEARCH every address in the /24, read LOCATION headers, fetch the device
 // description, and keep the DLNA media renderers.
 
+bool _isPrivate(String ip) =>
+    ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.');
+
 Future<String?> _subnetPrefix() async {
   final ifaces = await NetworkInterface.list(
       type: InternetAddressType.IPv4, includeLoopback: false);
-  for (final ni in ifaces) {
+  // Prefer the Wi-Fi interface (en0 on iOS, wlan on Android); else any private IPv4.
+  final ordered = [
+    ...ifaces.where((n) => n.name == 'en0' || n.name.startsWith('wlan')),
+    ...ifaces.where((n) => n.name != 'en0' && !n.name.startsWith('wlan')),
+  ];
+  for (final ni in ordered) {
     for (final a in ni.addresses) {
-      final ip = a.address;
-      if (ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.')) {
-        final p = ip.split('.');
+      if (_isPrivate(a.address)) {
+        final p = a.address.split('.');
         return '${p[0]}.${p[1]}.${p[2]}.';
       }
     }
   }
   return null;
+}
+
+// Parallel TCP sweep of the /24. Two jobs: (1) it triggers the iOS Local Network
+// permission prompt (UDP alone often doesn't), and (2) it counts live hosts so the
+// empty-state message can tell "no devices" from "devices but no DLNA".
+Future<int> _tcpSweep(String prefix) async {
+  var alive = 0;
+  await Future.wait([
+    for (var i = 1; i <= 254; i++)
+      () async {
+        for (final port in const [80, 1900, 8008, 8200, 7000]) {
+          try {
+            final s = await Socket.connect('$prefix$i', port,
+                timeout: const Duration(milliseconds: 400));
+            s.destroy();
+            alive++;
+            break;
+          } catch (_) {}
+        }
+      }(),
+  ]);
+  return alive;
 }
 
 Future<DlnaDeviceDescription?> _fetchDescription(String loc) async {
@@ -961,11 +990,16 @@ Future<LanScanResult> _probeDlna(List<String> hosts, {Duration wait = const Dura
   return LanScanResult(devices, locations.length);
 }
 
-Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 5)}) async {
+Future<LanScanResult> scanLanDlna({Duration wait = const Duration(seconds: 6)}) async {
   final prefix = await _subnetPrefix();
   if (prefix == null) return const LanScanResult([], 0);
+  // 1. TCP sweep first — opens the Local Network permission gate + counts live hosts.
+  final alive = await _tcpSweep(prefix);
+  // 2. SSDP unicast to every host (+ multicast group) to find DLNA renderers.
   final hosts = [for (var i = 1; i <= 254; i++) '$prefix$i', '239.255.255.250'];
-  return _probeDlna(hosts, wait: wait);
+  final ssdp = await _probeDlna(hosts, wait: wait);
+  // Report live-host count when no renderer was found, so the message is meaningful.
+  return LanScanResult(ssdp.devices, ssdp.devices.isNotEmpty ? ssdp.devices.length : alive);
 }
 
 // Targeted: M-SEARCH a single IP the user typed. Faster and bypasses subnet guessing.
