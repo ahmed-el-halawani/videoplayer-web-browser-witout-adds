@@ -1179,7 +1179,17 @@ class _ChewiePlayerState extends State<_ChewiePlayer> {
         _chewie = ChewieController(
           videoPlayerController: v,
           autoPlay: true,
+          // Maximize via Chewie's own fullscreen button (rotates to landscape).
           allowFullScreen: true,
+          deviceOrientationsOnEnterFullScreen: const [
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ],
+          deviceOrientationsAfterFullScreen: const [
+            DeviceOrientation.portraitUp,
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ],
           aspectRatio: v.value.aspectRatio,
         );
       });
